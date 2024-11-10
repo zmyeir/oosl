@@ -63,7 +63,6 @@ extract "$ZIPFILE" 'module.prop'     "$MODPATH"
 extract "$ZIPFILE" 'post-fs-data.sh' "$MODPATH"
 extract "$ZIPFILE" 'service.sh'      "$MODPATH"
 mv "$TMPDIR/sepolicy.rule" "$MODPATH"
-extract "$ZIPFILE" 'spoof_vars'      "$MODPATH"
 
 ui_print "- Extracting apps"
 # extract files in product
