@@ -65,10 +65,10 @@ jobs:
         if: success()
         id: prepareArtifact
         run: |
-          releaseName=`ls module/release/Wallet-Fix-*-release.zip | awk -F '(/|.zip)' '{print $3}'` && echo "releaseName=$releaseName" >> $GITHUB_OUTPUT
-          debugName=`ls module/release/Wallet-Fix-*-debug.zip | awk -F '(/|.zip)' '{print $3}'` && echo "debugName=$debugName" >> $GITHUB_OUTPUT
-          unzip module/release/Wallet-Fix-*-release.zip -d module-release
-          unzip module/release/Wallet-Fix-*-debug.zip -d module-debug
+          releaseName=`ls module/release/*-release.zip | awk -F '(/|.zip)' '{print $3}'` && echo "releaseName=$releaseName" >> $GITHUB_OUTPUT
+          debugName=`ls module/release/*-debug.zip | awk -F '(/|.zip)' '{print $3}'` && echo "debugName=$debugName" >> $GITHUB_OUTPUT
+          unzip module/release/*-release.zip -d module-release
+          unzip module/release/*-debug.zip -d module-debug
 
       - name: Upload release
         uses: actions/upload-artifact@v4
