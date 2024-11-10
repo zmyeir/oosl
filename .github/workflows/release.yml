@@ -52,24 +52,25 @@ jobs:
       - name: zip
         id: zip
         run: |
-          for dir in Wallet-Fix-*; do
+          for dir in *; do
             if [ -d "$dir" ]; then
               echo "----- Zip $dir -----"
               (cd $dir && zip -r9 "../$dir.zip" ./*)
+              rm -r $dir
             fi
           done
-          echo "release=$(ls Wallet-Fix-*-release.zip)" >> $GITHUB_OUTPUT
+          echo "release=$(ls *-release.zip)" >> $GITHUB_OUTPUT
 
       - name: Release
         uses: softprops/action-gh-release@v1
         with:
           tag_name: ${{ needs.setup.outputs.version }}
           files: |
-            Wallet-Fix-*.zip
+            *.zip
 
       - name: Cleanup
         run: |
-          rm -rf Wallet-Fix-*
+          rm -rf *.zip
 
       - name: Checkout
         uses: actions/checkout@v4
