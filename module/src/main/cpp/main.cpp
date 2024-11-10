@@ -15,7 +15,7 @@ using zygisk::Api;
 using zygisk::AppSpecializeArgs;
 using zygisk::ServerSpecializeArgs;
 
-#define LOG_TAG "WalletFix4OOS14"
+#define LOG_TAG "WalletFix4OOS"
 
 #ifdef NDEBUG
 #define LOGD(...) ((void)0)
@@ -30,8 +30,7 @@ using zygisk::ServerSpecializeArgs;
 #define LOGF(...) __android_log_print(ANDROID_LOG_FATAL, LOG_TAG, __VA_ARGS__)
 
 #define CONFIG_FILE "/data/adb/walletfix/spoof_vars"
-
-#define DEFAULT_CONFIG_FILE "/data/adb/modules/walletfix4oos14/spoof_vars"
+#define DEFAULT_CONFIG "MODEL=PJD110"
 
 ssize_t xread(int fd, void *buffer, size_t count) {
     LOGD("xread, fd: %d, count: %zu", fd, count);
@@ -108,8 +107,14 @@ public:
         std::string_view process(nice_name);
 
         LOGD("process: %s", process.data());
-        if (!process.starts_with("com.finshell.wallet") &&
-            !process.starts_with("com.unionpay.tsmservice")) {
+
+        std::vector<std::string_view> processes = {
+            "com.finshell.wallet",
+            "com.unionpay.tsmservice",
+        };
+        if (!std::any_of(processes.begin(), processes.end(), [&process](std::string_view p) {
+            return process.starts_with(p);
+        })) {
             return;
         }
 
@@ -230,7 +235,8 @@ static void companion_handler(int fd) {
     LOGD("config_data size: %zu", config_data.size());
     if (config_data.empty()) {
         LOGD("Using default config file");
-        config_data = readFile(DEFAULT_CONFIG_FILE);
+        config_data.resize(strlen(DEFAULT_CONFIG));
+        memcpy(config_data.data(), DEFAULT_CONFIG, strlen(DEFAULT_CONFIG));
     }
 
     int configSize = static_cast<int>(config_data.size());
