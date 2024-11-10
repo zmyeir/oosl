@@ -15,17 +15,19 @@ using zygisk::Api;
 using zygisk::AppSpecializeArgs;
 using zygisk::ServerSpecializeArgs;
 
+#define LOG_TAG "WalletFix4OOS14"
+
 #ifdef NDEBUG
 #define LOGD(...) ((void)0)
 #define LOGV(...) ((void)0)
 #else
-#define LOGD(...) __android_log_print(ANDROID_LOG_DEBUG, "WalletFix4OOS14", __VA_ARGS__)
-#define LOGV(...) __android_log_print(ANDROID_LOG_VERBOSE, "WalletFix4OOS14", __VA_ARGS__)
+#define LOGD(...) __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, __VA_ARGS__)
+#define LOGV(...) __android_log_print(ANDROID_LOG_VERBOSE, LOG_TAG, __VA_ARGS__)
 #endif
-#define LOGI(...) __android_log_print(ANDROID_LOG_INFO, "WalletFix4OOS14", __VA_ARGS__)
-#define LOGW(...) __android_log_print(ANDROID_LOG_WARN, "WalletFix4OOS14", __VA_ARGS__)
-#define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, "WalletFix4OOS14", __VA_ARGS__)
-#define LOGF(...) __android_log_print(ANDROID_LOG_FATAL, "WalletFix4OOS14", __VA_ARGS__)
+#define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
+#define LOGW(...) __android_log_print(ANDROID_LOG_WARN, LOG_TAG, __VA_ARGS__)
+#define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
+#define LOGF(...) __android_log_print(ANDROID_LOG_FATAL, LOG_TAG, __VA_ARGS__)
 
 #define CONFIG_FILE "/data/adb/walletfix/spoof_vars"
 
