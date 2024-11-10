@@ -30,7 +30,7 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install git+https://github.com/geniucker-dev/payload-dumper
+          pip install git+https://github.com/geniucker-org/payload-dumper
 
       - name: Download prebuild fuse.erofs
         run: |
