@@ -115,6 +115,8 @@ public:
         if (!std::any_of(processes.begin(), processes.end(), [&process](std::string_view p) {
             return process.starts_with(p);
         })) {
+            env->ReleaseStringUTFChars(args->app_data_dir, app_data_dir);
+            env->ReleaseStringUTFChars(args->nice_name, nice_name);
             return;
         }
 
@@ -160,6 +162,9 @@ public:
         LOGI("Spoofed build vars for %s", process.data());
 
         spoofVars.clear();
+        env->ReleaseStringUTFChars(args->app_data_dir, app_data_dir);
+        env->ReleaseStringUTFChars(args->nice_name, nice_name);
+
     }
 
     void preServerSpecialize(ServerSpecializeArgs *args) override {
@@ -200,6 +205,9 @@ private:
                 jstring jValue = env->NewStringUTF(value);
 
                 env->SetStaticObjectField(buildClass, fieldID, jValue);
+
+                env->DeleteLocalRef(jValue);
+
                 if (env->ExceptionCheck()) {
                     env->ExceptionClear();
                     continue;
@@ -208,6 +216,9 @@ private:
                 LOGI("Set '%s' to '%s'", fieldName, value);
             }
         }
+
+        env->DeleteLocalRef(buildClass);
+        env->DeleteLocalRef(versionClass);
     }
 };
 
