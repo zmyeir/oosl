@@ -1,5 +1,12 @@
 ## WalletFix4OOS14 更新日志
 
+### 2.2.0
+
+- Add 2 new related apps.
+
+> **If you update from 2.0.1 or earlier, please uninstall the old version first.**
+> **如果您从2.0.1或更早版本更新，请先卸载旧版本。**
+
 ### 2.1.0
 
 - fix: default config is not loaded
