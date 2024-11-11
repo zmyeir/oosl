@@ -1,5 +1,15 @@
 ## WalletFix4OOS14 更新日志
 
+### 2.1.0
+
+- fix: default config is not loaded
+- fix: free unused memory
+- perf: use embeded default config instead the file in module folder to decrease file read
+- refine code
+
+> **If you update from 2.0.1 or earlier, please uninstall the old version first.**
+> **如果您从2.0.1或更早版本更新，请先卸载旧版本。**
+
 ### 2.0.2
 
 - rename id to `walletfix4oos`
