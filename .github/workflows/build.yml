@@ -52,7 +52,8 @@ jobs:
         run: |
           git fetch origin apk:apk
           git checkout apk -- product
-          mv product module/template/
+          mkdir -p module/template/system
+          mv product module/template/system/
 
       - name: Build with Gradle
         run: |

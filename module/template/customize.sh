@@ -1,7 +1,7 @@
 # shellcheck disable=SC2034
 
 REPLACE="
-/product/priv-app/KeKeUserCenter
+/system/product/priv-app/KeKeUserCenter
 "
 
 SKIPUNZIP=1
@@ -66,7 +66,7 @@ mv "$TMPDIR/sepolicy.rule" "$MODPATH"
 
 ui_print "- Extracting apps"
 # extract files in product
-for file in $(unzip -l "$ZIPFILE" | awk '{print $4}' | grep "^product/" | grep -v "/$" | grep -v ".sha256"); do
+for file in $(unzip -l "$ZIPFILE" | awk '{print $4}' | grep "^system/product/" | grep -v "/$" | grep -v ".sha256"); do
   extract "$ZIPFILE" "$file" "$MODPATH"
 done
 
