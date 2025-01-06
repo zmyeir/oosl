@@ -1,5 +1,9 @@
 ## WalletFix4OOS14 更新日志
 
+### 2.2.1
+
+- fix: compatibility with KernelSU Next
+
 ### 2.2.0
 
 - Add 2 new related apps.
