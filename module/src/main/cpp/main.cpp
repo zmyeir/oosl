@@ -29,9 +29,10 @@ using zygisk::ServerSpecializeArgs;
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
 #define LOGF(...) __android_log_print(ANDROID_LOG_FATAL, LOG_TAG, __VA_ARGS__)
 
-#define CONFIG_FILE "/data/adb/OOSLocalization/spoof_vars"
-#define APPLIST_FILE "/data/adb/OOSLocalization/applist"
+#define CONFIG_FILE "/data/adb/OOSLocalization/model"
+#define APPLIST_FILE "/data/adb/OOSLocalization/target"
 #define DEFAULT_CONFIG "MODEL=PJD110"
+#define DEFAULT_TARGET_APPS {"com.finshell.wallet", "com.unionpay.tsmservice"}
 
 ssize_t xread(int fd, void *buffer, size_t count) {
     LOGD("xread, fd: %d, count: %zu", fd, count);
@@ -133,7 +134,7 @@ public:
             }
         } else {
             // 默认应用列表
-            targetApps = {"com.finshell.wallet", "com.unionpay.tsmservice"};
+            targetApps = DEFAULT_TARGET_APPS;
         }
 
         // 检查当前进程是否在目标应用列表中
