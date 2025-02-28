@@ -2,6 +2,7 @@
 #include <vector>
 #include <string_view>
 #include <unordered_map>
+#include <unordered_set>
 #include <filesystem>
 #include <unistd.h>
 #include <fcntl.h>
@@ -29,14 +30,8 @@ using zygisk::ServerSpecializeArgs;
 #define LOGF(...) __android_log_print(ANDROID_LOG_FATAL, LOG_TAG, __VA_ARGS__)
 
 #define CONFIG_FILE "/data/adb/OOSLocalization/spoof_vars"
-#define APPLIST_FILE "/data/adb/OOSLocalization/app_list"
+#define APPLIST_FILE "/data/adb/OOSLocalization/applist"
 #define DEFAULT_CONFIG "MODEL=PJD110"
-#define DEFAULT_APPLIST "com.finshell.wallet\ncom.unionpay.tsmservice"
-
-struct CompanionData {
-    std::vector<uint8_t> config_data;
-    std::vector<uint8_t> applist_data;
-};
 
 ssize_t xread(int fd, void *buffer, size_t count) {
     LOGD("xread, fd: %d, count: %zu", fd, count);
@@ -65,6 +60,11 @@ ssize_t xwrite(int fd, const void *buffer, size_t count) {
     }
     return total;
 }
+
+struct CompanionData {
+    std::vector<uint8_t> config_data;
+    std::vector<uint8_t> applist_data;
+};
 
 std::vector<std::string> split(const std::string& str, const std::string& delimiter) {
     std::vector<std::string> tokens;
@@ -116,70 +116,44 @@ public:
         int fd = api->connectCompanion();
         LOGD("connectCompanion: %d", fd);
         
-        // Read config and app list sizes
+        // 读取配置和应用列表
         CompanionData data;
-        int configSize, applistSize;
+        readCompanionData(fd, data);
         
-        xread(fd, &configSize, sizeof(configSize));
-        xread(fd, &applistSize, sizeof(applistSize));
-
-        std::string configStr, applistStr;
-        std::vector<std::string> targetApps;
-
-        // Read and parse app list
-        if (applistSize > 0) {
-            applistStr.resize(applistSize);
-            xread(fd, applistStr.data(), applistSize * sizeof(uint8_t));
-            auto apps = split(applistStr, "\n");
-            for (auto &app : apps) {
-                auto trimmed = trim(app);
+        // 解析应用列表
+        std::unordered_set<std::string> targetApps;
+        if (!data.applist_data.empty()) {
+            std::string applistStr(data.applist_data.begin(), data.applist_data.end());
+            auto lines = split(applistStr, "\n");
+            for (auto &line : lines) {
+                auto trimmed = trim(line);
                 if (!trimmed.empty()) {
-                    targetApps.push_back(trimmed);
+                    targetApps.insert(trimmed);
                 }
             }
+        } else {
+            // 默认应用列表
+            targetApps = {"com.finshell.wallet", "com.unionpay.tsmservice"};
         }
 
-        // Check if current process is in target list
-        bool shouldSpoof = false;
-        for (const auto &app : targetApps) {
-            if (process.starts_with(app)) {
-                shouldSpoof = true;
-                break;
-            }
-        }
-
-        if (!shouldSpoof) {
+        // 检查当前进程是否在目标应用列表中
+        if (!std::any_of(targetApps.begin(), targetApps.end(), [&process](const std::string &app) {
+            return process.starts_with(app);
+        })) {
             close(fd);
             env->ReleaseStringUTFChars(args->app_data_dir, app_data_dir);
             env->ReleaseStringUTFChars(args->nice_name, nice_name);
             return;
         }
 
-        // Read and parse config
-        if (configSize > 0) {
-            configStr.resize(configSize);
-            xread(fd, configStr.data(), configSize * sizeof(uint8_t));
-            LOGD("Config: %s", configStr.c_str());
-            auto lines = split(configStr, "\n");
-            LOGD("Parsed %zu lines", lines.size());
-            for (auto &line : lines) {
-                if (trim(line).empty()) {
-                    continue;
-                }
-                auto parts = split(line, "=");
-                if (parts.size() != 2) {
-                    continue;
-                }
-                auto key = trim(parts[0]);
-                auto value = trim(parts[1]);
-                spoofVars[key] = value;
-                LOGD("Parsed: %s=%s", key.c_str(), value.c_str());
-            }
+        // 解析配置文件
+        if (!data.config_data.empty()) {
+            std::string configStr(data.config_data.begin(), data.config_data.end());
+            parseConfig(configStr);
         }
-        
+
         close(fd);
         LOGD("Close companion, fd: %d", fd);
-        LOGI("Config file size: %d, App list size: %d", configSize, applistSize);
 
         LOGI("Spoofing build vars for %s", process.data());
         UpdateBuildFields();
@@ -199,6 +173,43 @@ private:
     Api *api;
     JNIEnv *env;
     std::unordered_map<std::string, std::string> spoofVars;
+
+    void readCompanionData(int fd, CompanionData &data) {
+        int configSize, applistSize;
+        
+        // 读取配置文件大小和内容
+        xread(fd, &configSize, sizeof(configSize));
+        if (configSize > 0) {
+            data.config_data.resize(configSize);
+            xread(fd, data.config_data.data(), configSize);
+        }
+        
+        // 读取应用列表大小和内容
+        xread(fd, &applistSize, sizeof(applistSize));
+        if (applistSize > 0) {
+            data.applist_data.resize(applistSize);
+            xread(fd, data.applist_data.data(), applistSize);
+        }
+    }
+
+    void parseConfig(const std::string &configStr) {
+        LOGD("Parsing config");
+        auto lines = split(configStr, "\n");
+        LOGD("Parsed %zu lines", lines.size());
+        for (auto &line: lines) {
+            if (trim(line).empty()) {
+                continue;
+            }
+            auto parts = split(line, "=");
+            if (parts.size() != 2) {
+                continue;
+            }
+            auto key = trim(parts[0]);
+            auto value = trim(parts[1]);
+            spoofVars[key] = value;
+            LOGD("Parsed: %s=%s", key.c_str(), value.c_str());
+        }
+    }
 
     void UpdateBuildFields() {
         LOGD("UpdateBuildFields");
@@ -264,35 +275,28 @@ static std::vector<uint8_t> readFile(const char *path) {
 static void companion_handler(int fd) {
     LOGD("companion_handler, fd: %d", fd);
     
-    // Read config file
+    // 读取配置文件
     std::vector<uint8_t> config_data = readFile(CONFIG_FILE);
     if (config_data.empty()) {
-        LOGD("Using default config file");
         config_data.resize(strlen(DEFAULT_CONFIG));
         memcpy(config_data.data(), DEFAULT_CONFIG, strlen(DEFAULT_CONFIG));
     }
-
-    // Read app list file
+    
+    // 读取应用列表文件
     std::vector<uint8_t> applist_data = readFile(APPLIST_FILE);
-    if (applist_data.empty()) {
-        LOGD("Using default app list");
-        applist_data.resize(strlen(DEFAULT_APPLIST));
-        memcpy(applist_data.data(), DEFAULT_APPLIST, strlen(DEFAULT_APPLIST));
-    }
-
+    
+    // 发送配置文件大小和内容
     int configSize = static_cast<int>(config_data.size());
-    int applistSize = static_cast<int>(applist_data.size());
-
-    // Write sizes
     xwrite(fd, &configSize, sizeof(configSize));
-    xwrite(fd, &applistSize, sizeof(applistSize));
-
-    // Write data
     if (configSize > 0) {
-        xwrite(fd, config_data.data(), configSize * sizeof(uint8_t));
+        xwrite(fd, config_data.data(), configSize);
     }
+    
+    // 发送应用列表大小和内容
+    int applistSize = static_cast<int>(applist_data.size());
+    xwrite(fd, &applistSize, sizeof(applistSize));
     if (applistSize > 0) {
-        xwrite(fd, applist_data.data(), applistSize * sizeof(uint8_t));
+        xwrite(fd, applist_data.data(), applistSize);
     }
     
     LOGD("companion_handler done, fd: %d", fd);
