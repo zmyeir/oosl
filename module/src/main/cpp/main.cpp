@@ -10,12 +10,11 @@
 
 #include "zygisk.hpp"
 
-
 using zygisk::Api;
 using zygisk::AppSpecializeArgs;
 using zygisk::ServerSpecializeArgs;
 
-#define LOG_TAG "WalletFix4OOS"
+#define LOG_TAG "OOSLocalization"
 
 #ifdef NDEBUG
 #define LOGD(...) ((void)0)
@@ -29,8 +28,15 @@ using zygisk::ServerSpecializeArgs;
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
 #define LOGF(...) __android_log_print(ANDROID_LOG_FATAL, LOG_TAG, __VA_ARGS__)
 
-#define CONFIG_FILE "/data/adb/walletfix/spoof_vars"
+#define CONFIG_FILE "/data/adb/OOSLocalization/spoof_vars"
+#define APPLIST_FILE "/data/adb/OOSLocalization/app_list"
 #define DEFAULT_CONFIG "MODEL=PJD110"
+#define DEFAULT_APPLIST "com.finshell.wallet\ncom.unionpay.tsmservice"
+
+struct CompanionData {
+    std::vector<uint8_t> config_data;
+    std::vector<uint8_t> applist_data;
+};
 
 ssize_t xread(int fd, void *buffer, size_t count) {
     LOGD("xread, fd: %d, count: %zu", fd, count);
@@ -76,7 +82,6 @@ std::vector<std::string> split(const std::string& str, const std::string& delimi
 }
 
 std::string trim(const std::string& str) {
-    // remove spaces, tabs, newlines
     size_t start = str.find_first_not_of(" \t\n\r");
     size_t end = str.find_last_not_of(" \t\n\r");
     if (start == std::string::npos || end == std::string::npos || start > end) {
@@ -108,41 +113,61 @@ public:
 
         LOGD("process: %s", process.data());
 
-        std::vector<std::string_view> processes = {
-            "com.finshell.wallet",
-            "com.unionpay.tsmservice",
-        };
-        if (!std::any_of(processes.begin(), processes.end(), [&process](std::string_view p) {
-            return process.starts_with(p);
-        })) {
+        int fd = api->connectCompanion();
+        LOGD("connectCompanion: %d", fd);
+        
+        // Read config and app list sizes
+        CompanionData data;
+        int configSize, applistSize;
+        
+        xread(fd, &configSize, sizeof(configSize));
+        xread(fd, &applistSize, sizeof(applistSize));
+
+        std::string configStr, applistStr;
+        std::vector<std::string> targetApps;
+
+        // Read and parse app list
+        if (applistSize > 0) {
+            applistStr.resize(applistSize);
+            xread(fd, applistStr.data(), applistSize * sizeof(uint8_t));
+            auto apps = split(applistStr, "\n");
+            for (auto &app : apps) {
+                auto trimmed = trim(app);
+                if (!trimmed.empty()) {
+                    targetApps.push_back(trimmed);
+                }
+            }
+        }
+
+        // Check if current process is in target list
+        bool shouldSpoof = false;
+        for (const auto &app : targetApps) {
+            if (process.starts_with(app)) {
+                shouldSpoof = true;
+                break;
+            }
+        }
+
+        if (!shouldSpoof) {
+            close(fd);
             env->ReleaseStringUTFChars(args->app_data_dir, app_data_dir);
             env->ReleaseStringUTFChars(args->nice_name, nice_name);
             return;
         }
 
-        int fd = api->connectCompanion();
-        LOGD("connectCompanion: %d", fd);
-        int configSize;
-        std::string configStr;
-        xread(fd, &configSize, sizeof(configSize));
+        // Read and parse config
         if (configSize > 0) {
             configStr.resize(configSize);
             xread(fd, configStr.data(), configSize * sizeof(uint8_t));
-            // Parse config
             LOGD("Config: %s", configStr.c_str());
-            LOGD("Parsing config");
             auto lines = split(configStr, "\n");
             LOGD("Parsed %zu lines", lines.size());
-            for (auto &line: lines) {
-                // skip empty lines
-                LOGD("Line: %s", line.c_str());
+            for (auto &line : lines) {
                 if (trim(line).empty()) {
-                    LOGD("Empty line");
                     continue;
                 }
                 auto parts = split(line, "=");
                 if (parts.size() != 2) {
-                    LOGD("Invalid line");
                     continue;
                 }
                 auto key = trim(parts[0]);
@@ -150,12 +175,11 @@ public:
                 spoofVars[key] = value;
                 LOGD("Parsed: %s=%s", key.c_str(), value.c_str());
             }
-            LOGD("Parsed %zu spoof vars", spoofVars.size());
-            
         }
+        
         close(fd);
         LOGD("Close companion, fd: %d", fd);
-        LOGI("Config file size: %d", configSize);
+        LOGI("Config file size: %d, App list size: %d", configSize, applistSize);
 
         LOGI("Spoofing build vars for %s", process.data());
         UpdateBuildFields();
@@ -164,7 +188,6 @@ public:
         spoofVars.clear();
         env->ReleaseStringUTFChars(args->app_data_dir, app_data_dir);
         env->ReleaseStringUTFChars(args->nice_name, nice_name);
-
     }
 
     void preServerSpecialize(ServerSpecializeArgs *args) override {
@@ -240,26 +263,40 @@ static std::vector<uint8_t> readFile(const char *path) {
 
 static void companion_handler(int fd) {
     LOGD("companion_handler, fd: %d", fd);
-    std::vector<uint8_t> config_data;
-
-    config_data = readFile(CONFIG_FILE);
-    LOGD("config_data size: %zu", config_data.size());
+    
+    // Read config file
+    std::vector<uint8_t> config_data = readFile(CONFIG_FILE);
     if (config_data.empty()) {
         LOGD("Using default config file");
         config_data.resize(strlen(DEFAULT_CONFIG));
         memcpy(config_data.data(), DEFAULT_CONFIG, strlen(DEFAULT_CONFIG));
     }
 
+    // Read app list file
+    std::vector<uint8_t> applist_data = readFile(APPLIST_FILE);
+    if (applist_data.empty()) {
+        LOGD("Using default app list");
+        applist_data.resize(strlen(DEFAULT_APPLIST));
+        memcpy(applist_data.data(), DEFAULT_APPLIST, strlen(DEFAULT_APPLIST));
+    }
+
     int configSize = static_cast<int>(config_data.size());
+    int applistSize = static_cast<int>(applist_data.size());
 
+    // Write sizes
     xwrite(fd, &configSize, sizeof(configSize));
+    xwrite(fd, &applistSize, sizeof(applistSize));
 
+    // Write data
     if (configSize > 0) {
         xwrite(fd, config_data.data(), configSize * sizeof(uint8_t));
     }
+    if (applistSize > 0) {
+        xwrite(fd, applist_data.data(), applistSize * sizeof(uint8_t));
+    }
+    
     LOGD("companion_handler done, fd: %d", fd);
 }
 
-// Register our module class and the companion handler function
 REGISTER_ZYGISK_MODULE(MyModule)
 REGISTER_ZYGISK_COMPANION(companion_handler)
