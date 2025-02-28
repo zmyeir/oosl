@@ -48,19 +48,11 @@ jobs:
         with:
           packages: ''
 
-      - name: Get apks from apk branch
-        run: |
-          git fetch origin apk:apk
-          git checkout apk -- product
-          mkdir -p module/template/system
-          mv product module/template/system/
-
       - name: Build with Gradle
         run: |
           chmod +x gradlew
           ./gradlew zipRelease
           ./gradlew zipDebug
-
 
       - name: Prepare artifact
         if: success()
