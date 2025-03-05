@@ -1,581 +1,224 @@
 #include <android/log.h>
-#include <sys/system_properties.h>
 #include <unistd.h>
 #include "zygisk.hpp"
-#include "dobby.h"
 
 #define JSON_NOEXCEPTION 1
 #define JSON_NO_IO 1
 
 #include "json.hpp"
 
-#define LOGD(...) __android_log_print(ANDROID_LOG_DEBUG, "PIF", __VA_ARGS__)
-#define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, "PIF", __VA_ARGS__)
+#include <string>
+#include <vector>
+#include <unordered_map>
+#include <fstream>
 
-#define DEX_PATH "/data/adb/modules/playintegrityfix/classes.dex"
+using json = nlohmann::json;
+using namespace std;
+using zygisk::Api;
+using zygisk::AppSpecializeArgs;
+using zygisk::ServerSpecializeArgs;
 
-#define TS_PATH "/data/adb/modules/tricky_store"
+#define LOG_TAG "SpoofX"
 
-#define DEFAULT_JSON "/data/adb/modules/playintegrityfix/pif.json"
-#define CUSTOM_JSON_FORK "/data/adb/modules/playintegrityfix/custom.pif.json"
-#define CUSTOM_JSON "/data/adb/pif.json"
+#ifdef NDEBUG
+#define LOGD(...) ((void)0)
+#define LOGV(...) ((void)0)
+#else
+#define LOGD(...) __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, __VA_ARGS__)
+#define LOGV(...) __android_log_print(ANDROID_LOG_VERBOSE, LOG_TAG, __VA_ARGS__)
+#endif
+#define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
+#define LOGW(...) __android_log_print(ANDROID_LOG_WARN, LOG_TAG, __VA_ARGS__)
+#define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
 
-#define VENDING_PACKAGE "com.android.vending"
-#define DROIDGUARD_PACKAGE "com.google.android.gms.unstable"
+#define CONFIG_FILE "/data/adb/SpoofX/config.json"
+#define TARGET_FILE "/data/adb/SpoofX/target"
 
-static ssize_t xread(int fd, void *buffer, size_t count) {
-    ssize_t total = 0;
-    char *buf = static_cast<char *>(buffer);
-    while (count > 0) {
-        ssize_t ret = TEMP_FAILURE_RETRY(read(fd, buf, count));
-        if (ret < 0) return -1;
-        buf += ret;
-        total += ret;
-        count -= ret;
+struct CompanionData {
+    vector<uint8_t> config_data;
+    vector<uint8_t> target_data;
+};
+
+// 读取完整文件
+static vector<uint8_t> readFile(const char *path) {
+    std::ifstream file(path, std::ios::binary | std::ios::ate);
+    if (!file) return {};
+    
+    std::streamsize size = file.tellg();
+    file.seekg(0, std::ios::beg);
+    
+    vector<uint8_t> buffer(size);
+    if (file.read(reinterpret_cast<char*>(buffer.data()), size)) {
+        return buffer;
     }
-    return total;
+    return {};
 }
 
-static ssize_t xwrite(int fd, const void *buffer, size_t count) {
-    ssize_t total = 0;
-    char *buf = (char *) buffer;
-    while (count > 0) {
-        ssize_t ret = TEMP_FAILURE_RETRY(write(fd, buf, count));
-        if (ret < 0) return -1;
-        buf += ret;
-        total += ret;
-        count -= ret;
-    }
-    return total;
-}
+// 读取 Companion 发送的数据
+void readCompanionData(int fd, CompanionData &data) {
+    int configSize, targetSize;
 
-static bool DEBUG = false;
-static std::string DEVICE_INITIAL_SDK_INT, SECURITY_PATCH, BUILD_ID;
-
-typedef void (*T_Callback)(void *, const char *, const char *, uint32_t);
-
-static T_Callback o_callback = nullptr;
-
-static void modify_callback(void *cookie, const char *name, const char *value, uint32_t serial) {
-
-    if (!cookie || !name || !value || !o_callback) return;
-
-    const char *oldValue = value;
-
-    std::string_view prop(name);
-
-    if (prop == "init.svc.adbd") {
-        value = "stopped";
-    } else if (prop == "sys.usb.state") {
-        value = "mtp";
-    } else if (prop.ends_with("api_level")) {
-        if (!DEVICE_INITIAL_SDK_INT.empty()) {
-            value = DEVICE_INITIAL_SDK_INT.c_str();
-        }
-    } else if (prop.ends_with(".security_patch")) {
-        if (!SECURITY_PATCH.empty()) {
-            value = SECURITY_PATCH.c_str();
-        }
-    } else if (prop.ends_with(".build.id")) {
-        if (!BUILD_ID.empty()) {
-            value = BUILD_ID.c_str();
-        }
+    read(fd, &configSize, sizeof(configSize));
+    if (configSize > 0) {
+        data.config_data.resize(configSize);
+        read(fd, data.config_data.data(), configSize);
     }
 
-    if (strcmp(oldValue, value) == 0) {
-        if (DEBUG) LOGD("[%s]: %s (unchanged)", name, oldValue);
-    } else {
-        LOGD("[%s]: %s -> %s", name, oldValue, value);
+    read(fd, &targetSize, sizeof(targetSize));
+    if (targetSize > 0) {
+        data.target_data.resize(targetSize);
+        read(fd, data.target_data.data(), targetSize);
     }
-
-    return o_callback(cookie, name, value, serial);
 }
 
-static void (*o_system_property_read_callback)(prop_info *, T_Callback, void *) = nullptr;
-
-static void my_system_property_read_callback(prop_info *pi, T_Callback callback, void *cookie) {
-    if (pi && callback && cookie) o_callback = callback;
-    return o_system_property_read_callback(pi, modify_callback, cookie);
-}
-
-static bool doHook() {
-    void *ptr = DobbySymbolResolver(nullptr, "__system_property_read_callback");
-
-    if (ptr && DobbyHook(ptr, (void *) my_system_property_read_callback,
-                         (void **) &o_system_property_read_callback) == 0) {
-        LOGD("hook __system_property_read_callback successful at %p", ptr);
-        return true;
+// 字符串处理工具
+vector<string> split(const string &str, const string &delimiter) {
+    vector<string> tokens;
+    size_t start = 0, end;
+    
+    while ((end = str.find(delimiter, start)) != string::npos) {
+        tokens.push_back(str.substr(start, end - start));
+        start = end + delimiter.length();
     }
-
-    LOGE("hook __system_property_read_callback failed!");
-    return false;
+    tokens.push_back(str.substr(start));
+    return tokens;
 }
 
-class PlayIntegrityFix : public zygisk::ModuleBase {
+string trim(const string &str) {
+    auto start = str.find_first_not_of(" \t\n\r");
+    if (start == string::npos) return "";
+    
+    auto end = str.find_last_not_of(" \t\n\r");
+    return str.substr(start, end - start + 1);
+}
+
+class SpoofXModule : public zygisk::ModuleBase {
 public:
-    void onLoad(zygisk::Api *_api, JNIEnv *_env) override {
-        this->api = _api;
-        this->env = _env;
+    void onLoad(Api *api, JNIEnv *env) override {
+        this->api = api;
+        this->env = env;
     }
 
-    void preAppSpecialize(zygisk::AppSpecializeArgs *args) override {
+    void preAppSpecialize(AppSpecializeArgs *args) override {
+        LOGD("preAppSpecialize");
+        api->setOption(zygisk::DLCLOSE_MODULE_LIBRARY);
 
-        if (!args) {
-            api->setOption(zygisk::DLCLOSE_MODULE_LIBRARY);
-            return;
-        }
+        if (!args || !args->nice_name) return;
 
-        auto dir = env->GetStringUTFChars(args->app_data_dir, nullptr);
+        const char *process = env->GetStringUTFChars(args->nice_name, nullptr);
+        if (!process) return;
+        LOGD("Process: %s", process);
 
-        if (!dir) {
-            api->setOption(zygisk::DLCLOSE_MODULE_LIBRARY);
-            return;
-        }
-
-        std::string_view vDir(dir);
-
-        bool isGms =
-                vDir.ends_with("/com.google.android.gms") || vDir.ends_with("/com.android.vending");
-
-        env->ReleaseStringUTFChars(args->app_data_dir, dir);
-
-        if (!isGms) {
-            api->setOption(zygisk::DLCLOSE_MODULE_LIBRARY);
-            return;
-        }
-
-        api->setOption(zygisk::FORCE_DENYLIST_UNMOUNT);
-
-        auto name = env->GetStringUTFChars(args->nice_name, nullptr);
-
-        if (!name) {
-            api->setOption(zygisk::DLCLOSE_MODULE_LIBRARY);
-            return;
-        }
-
-        std::string_view vName(name);
-
-        isGmsUnstable = vName == DROIDGUARD_PACKAGE;
-        isVending = vName == VENDING_PACKAGE;
-
-        env->ReleaseStringUTFChars(args->nice_name, name);
-
-        if (!isGmsUnstable && !isVending) {
-            api->setOption(zygisk::DLCLOSE_MODULE_LIBRARY);
-            return;
-        }
-
-        if (isGmsUnstable)
-            LOGD("We are in GMS unstable process!");
-
-        if (isVending)
-            LOGD("We are in Play Store process!");
-
+        // 连接 Companion 读取配置
         int fd = api->connectCompanion();
-
-        size_t dexSize = 0, jsonSize = 0;
-        std::string jsonStr;
-
-        xread(fd, &dexSize, sizeof(size_t));
-        xread(fd, &jsonSize, sizeof(size_t));
-
-        if (dexSize > 0) {
-            dexVector.resize(dexSize);
-            xread(fd, dexVector.data(), dexSize);
+        if (fd < 0) {
+            LOGE("Failed to connect to companion.");
+            env->ReleaseStringUTFChars(args->nice_name, process);
+            return;
         }
 
-        if (jsonSize > 0) {
-            jsonStr.resize(jsonSize);
-            jsonSize = xread(fd, jsonStr.data(), jsonSize);
-            jsonStr[jsonSize] = '\0';
-            json = nlohmann::json::parse(jsonStr, nullptr, false, true);
-        }
-
-        bool trickyStore = false;
-        xread(fd, &trickyStore, sizeof(bool));
-
-        bool testSignedRom = false;
-        xread(fd, &testSignedRom, sizeof(bool));
-
+        CompanionData data;
+        readCompanionData(fd, data);
         close(fd);
 
-        LOGD("Dex file size: %zu", dexSize);
-        LOGD("Json file size: %zu", jsonSize);
-
-        parseJSON();
-
-        if (trickyStore) {
-            LOGD("TrickyStore module detected!");
-            spoofProvider = false;
-            spoofProps = false;
-        }
-
-        if (testSignedRom) {
-            LOGD("--- ROM IS SIGNED WITH TEST KEYS ---");
-            spoofSignature = true;
-        }
-    }
-
-    void postAppSpecialize(const zygisk::AppSpecializeArgs *args) override {
-        if (dexVector.empty()) return;
-
-        if (isGmsUnstable) {
-            UpdateBuildFields();
-
-            if (spoofProvider || spoofSignature) {
-                injectDex();
-            } else {
-                LOGD("Dex file won't be injected due spoofProvider and spoofSignature are false");
-            }
-
-            if (spoofProps) {
-                if (!doHook()) {
-                    dlclose();
+        // 解析目标应用
+        unordered_map<string, string> targetMap;
+        if (!data.target_data.empty()) {
+            string targetStr(data.target_data.begin(), data.target_data.end());
+            auto lines = split(targetStr, "\n");
+            for (const auto &line : lines) {
+                auto parts = split(trim(line), "|");
+                if (parts.size() == 2) {
+                    targetMap[parts[0]] = parts[1];
                 }
-            } else {
-                dlclose();
             }
-        } else if (isVending) {
-            doSpoofVending();
-            dlclose();
         }
 
-        json.clear();
+        auto it = targetMap.find(process);
+        if (it == targetMap.end()) {
+            LOGD("Process %s is not in target list, skipping.", process);
+            env->ReleaseStringUTFChars(args->nice_name, process);
+            return;
+        }
 
-        dexVector.clear();
-        dexVector.shrink_to_fit();
+        string targetName = it->second;
+        LOGI("Process %s is mapped to config %s", process, targetName.c_str());
+
+        // 解析 JSON 配置
+        unordered_map<string, string> spoofVars;
+        if (!data.config_data.empty()) {
+            json configJson = json::parse(data.config_data, nullptr, false);
+            if (configJson.is_array()) {
+                for (const auto &entry : configJson) {
+                    if (entry.contains("name") && entry["name"].is_string() &&
+                        entry["name"].get<string>() == targetName &&
+                        entry.contains("configuration") && entry["configuration"].is_object()) {
+                        for (auto &[key, value] : entry["configuration"].items()) {
+                            if (value.is_string()) {
+                                spoofVars[key] = value.get<string>();
+                            }
+                        }
+                        break;
+                    }
+                }
+            }
+        }
+
+        if (spoofVars.empty()) {
+            LOGW("No spoofing config found for %s", process);
+            env->ReleaseStringUTFChars(args->nice_name, process);
+            return;
+        }
+
+        // 更新系统属性
+        updateBuildFields(spoofVars);
+        LOGI("Spoofing applied for %s", process);
+
+        env->ReleaseStringUTFChars(args->nice_name, process);
     }
 
-    void preServerSpecialize(zygisk::ServerSpecializeArgs *args) override {
+    void preServerSpecialize(ServerSpecializeArgs *args) override {
+        LOGD("preServerSpecialize");
         api->setOption(zygisk::DLCLOSE_MODULE_LIBRARY);
     }
 
 private:
-    zygisk::Api *api = nullptr;
-    JNIEnv *env = nullptr;
-    bool isGmsUnstable = false;
-    bool isVending = false;
-    std::vector<char> dexVector;
-    nlohmann::json json;
-    bool spoofProps = true;
-    bool spoofProvider = true;
-    bool spoofSignature = false;
-    int spoofVendingSdk = 0;
+    Api *api;
+    JNIEnv *env;
 
-    void dlclose() {
-        LOGD("dlclose zygisk lib");
-        api->setOption(zygisk::DLCLOSE_MODULE_LIBRARY);
-    }
-
-    void doSpoofVending() {
-        if (spoofVendingSdk < 1) return;
-        int requestSdk = (spoofVendingSdk == 1) ? 32 : spoofVendingSdk;
-        int targetSdk;
-        int oldValue;
-
-        jclass buildVersionClass = nullptr;
-        jfieldID sdkIntFieldID = nullptr;
-
-        buildVersionClass = env->FindClass("android/os/Build$VERSION");
-        if (buildVersionClass == nullptr) {
-            LOGE("Build.VERSION class not found");
-            env->ExceptionClear();
-            return;
-        }
-
-        sdkIntFieldID = env->GetStaticFieldID(buildVersionClass, "SDK_INT", "I");
-        if (sdkIntFieldID == nullptr) {
-            LOGE("SDK_INT field not found");
-            env->ExceptionClear();
-            env->DeleteLocalRef(buildVersionClass);
-            return;
-        }
-
-        oldValue = env->GetStaticIntField(buildVersionClass, sdkIntFieldID);
-        targetSdk = std::min(oldValue, requestSdk);
-
-        if (oldValue == targetSdk) {
-            env->DeleteLocalRef(buildVersionClass);
-            return;
-        }
-
-        env->SetStaticIntField(buildVersionClass, sdkIntFieldID, targetSdk);
-
-        if (env->ExceptionCheck()) {
-            env->ExceptionDescribe();
-            env->ExceptionClear();
-            LOGE("SDK_INT field not accessible (JNI Exception)");
-        } else {
-            LOGE("[SDK_INT]: %d -> %d", oldValue, targetSdk);
-        }
-
-        env->DeleteLocalRef(buildVersionClass);
-    }
-
-    void parseJSON() {
-        if (json.empty()) return;
-
-        if (json.contains("spoofVendingSdk")) {
-            if (json["spoofVendingSdk"].is_string()) {
-                spoofVendingSdk = std::stoi(json["spoofVendingSdk"].get<std::string>());
-            } else if (json["spoofVendingSdk"].is_number_integer()) {
-                spoofVendingSdk = json["spoofVendingSdk"].get<int>();
-            } else {
-                LOGE("Error parsing spoofVendingSdk!");
-            }
-            json.erase("spoofVendingSdk");
-        }
-
-        if (isVending) {
-            json.clear();
-            return;
-        }
-
-        if (json.contains("DEVICE_INITIAL_SDK_INT")) {
-            if (json["DEVICE_INITIAL_SDK_INT"].is_string()) {
-                DEVICE_INITIAL_SDK_INT = json["DEVICE_INITIAL_SDK_INT"].get<std::string>();
-            } else if (json["DEVICE_INITIAL_SDK_INT"].is_number_integer()) {
-                DEVICE_INITIAL_SDK_INT = std::to_string(json["DEVICE_INITIAL_SDK_INT"].get<int>());
-            } else {
-                LOGE("Couldn't parse DEVICE_INITIAL_SDK_INT value!");
-            }
-            json.erase("DEVICE_INITIAL_SDK_INT");
-        }
-
-        if (json.contains("spoofProvider") && json["spoofProvider"].is_boolean()) {
-            spoofProvider = json["spoofProvider"].get<bool>();
-            json.erase("spoofProvider");
-        }
-
-        if (json.contains("spoofProps") && json["spoofProps"].is_boolean()) {
-            spoofProps = json["spoofProps"].get<bool>();
-            json.erase("spoofProps");
-        }
-
-        if (json.contains("spoofSignature") && json["spoofSignature"].is_boolean()) {
-            spoofSignature = json["spoofSignature"].get<bool>();
-            json.erase("spoofSignature");
-        }
-
-        if (json.contains("DEBUG") && json["DEBUG"].is_boolean()) {
-            DEBUG = json["DEBUG"].get<bool>();
-            json.erase("DEBUG");
-        }
-
-        if (json.contains("FINGERPRINT") && json["FINGERPRINT"].is_string()) {
-            std::string fingerprint = json["FINGERPRINT"].get<std::string>();
-
-            std::vector<std::string> vector;
-            auto parts = fingerprint | std::views::split('/');
-
-            for (const auto &part: parts) {
-                auto subParts = std::string(part.begin(), part.end()) | std::views::split(':');
-                for (const auto &subPart: subParts) {
-                    vector.emplace_back(subPart.begin(), subPart.end());
-                }
-            }
-
-            if (vector.size() == 8) {
-                json["BRAND"] = vector[0];
-                json["PRODUCT"] = vector[1];
-                json["DEVICE"] = vector[2];
-                json["RELEASE"] = vector[3];
-                json["ID"] = vector[4];
-                json["INCREMENTAL"] = vector[5];
-                json["TYPE"] = vector[6];
-                json["TAGS"] = vector[7];
-            } else {
-                LOGE("Error parsing fingerprint values!");
-            }
-        }
-
-        if (json.contains("SECURITY_PATCH") && json["SECURITY_PATCH"].is_string()) {
-            SECURITY_PATCH = json["SECURITY_PATCH"].get<std::string>();
-        }
-
-        if (json.contains("ID") && json["ID"].is_string()) {
-            BUILD_ID = json["ID"].get<std::string>();
-        }
-    }
-
-    void injectDex() {
-        LOGD("get system classloader");
-        auto clClass = env->FindClass("java/lang/ClassLoader");
-        auto getSystemClassLoader = env->GetStaticMethodID(clClass, "getSystemClassLoader",
-                                                           "()Ljava/lang/ClassLoader;");
-        auto systemClassLoader = env->CallStaticObjectMethod(clClass, getSystemClassLoader);
-
-        if (env->ExceptionCheck()) {
-            env->ExceptionDescribe();
-            env->ExceptionClear();
-            return;
-        }
-
-        LOGD("create class loader");
-        auto dexClClass = env->FindClass("dalvik/system/InMemoryDexClassLoader");
-        auto dexClInit = env->GetMethodID(dexClClass, "<init>",
-                                          "(Ljava/nio/ByteBuffer;Ljava/lang/ClassLoader;)V");
-        auto buffer = env->NewDirectByteBuffer(dexVector.data(),
-                                               static_cast<jlong>(dexVector.size()));
-        auto dexCl = env->NewObject(dexClClass, dexClInit, buffer, systemClassLoader);
-
-        if (env->ExceptionCheck()) {
-            env->ExceptionDescribe();
-            env->ExceptionClear();
-            return;
-        }
-
-        LOGD("load class");
-        auto loadClass = env->GetMethodID(clClass, "loadClass",
-                                          "(Ljava/lang/String;)Ljava/lang/Class;");
-        auto entryClassName = env->NewStringUTF("es.chiteroman.playintegrityfix.EntryPoint");
-        auto entryClassObj = env->CallObjectMethod(dexCl, loadClass, entryClassName);
-        auto entryPointClass = (jclass) entryClassObj;
-
-        if (env->ExceptionCheck()) {
-            env->ExceptionDescribe();
-            env->ExceptionClear();
-            return;
-        }
-
-        LOGD("call init");
-        auto entryInit = env->GetStaticMethodID(entryPointClass, "init", "(Ljava/lang/String;ZZ)V");
-        auto jsonStr = env->NewStringUTF(json.dump().c_str());
-        env->CallStaticVoidMethod(entryPointClass, entryInit, jsonStr, spoofProvider,
-                                  spoofSignature);
-
-        if (env->ExceptionCheck()) {
-            env->ExceptionDescribe();
-            env->ExceptionClear();
-        }
-
-        env->DeleteLocalRef(entryClassName);
-        env->DeleteLocalRef(entryClassObj);
-        env->DeleteLocalRef(jsonStr);
-        env->DeleteLocalRef(dexCl);
-        env->DeleteLocalRef(buffer);
-        env->DeleteLocalRef(dexClClass);
-        env->DeleteLocalRef(clClass);
-
-        LOGD("jni memory free");
-    }
-
-    void UpdateBuildFields() {
+    void updateBuildFields(const unordered_map<string, string> &spoofVars) {
         jclass buildClass = env->FindClass("android/os/Build");
         jclass versionClass = env->FindClass("android/os/Build$VERSION");
 
-        for (auto &[key, val]: json.items()) {
-            if (!val.is_string()) continue;
-
-            const char *fieldName = key.c_str();
-
-            jfieldID fieldID = env->GetStaticFieldID(buildClass, fieldName, "Ljava/lang/String;");
-
-            if (env->ExceptionCheck()) {
-                env->ExceptionClear();
-
-                fieldID = env->GetStaticFieldID(versionClass, fieldName, "Ljava/lang/String;");
-
-                if (env->ExceptionCheck()) {
-                    env->ExceptionClear();
-                    continue;
-                }
+        for (const auto &[key, value] : spoofVars) {
+            jfieldID fieldID = env->GetStaticFieldID(buildClass, key.c_str(), "Ljava/lang/String;");
+            if (!fieldID) {
+                fieldID = env->GetStaticFieldID(versionClass, key.c_str(), "Ljava/lang/String;");
+                if (!fieldID) continue;
             }
-
-            if (fieldID != nullptr) {
-                std::string str = val.get<std::string>();
-                const char *value = str.c_str();
-                jstring jValue = env->NewStringUTF(value);
-
-                env->SetStaticObjectField(buildClass, fieldID, jValue);
-                if (env->ExceptionCheck()) {
-                    env->ExceptionClear();
-                    continue;
-                }
-
-                LOGD("Set '%s' to '%s'", fieldName, value);
-            }
+            jstring jValue = env->NewStringUTF(value.c_str());
+            env->SetStaticObjectField(buildClass, fieldID, jValue);
+            env->DeleteLocalRef(jValue);
+            LOGI("Set '%s' to '%s'", key.c_str(), value.c_str());
         }
+
+        env->DeleteLocalRef(buildClass);
+        env->DeleteLocalRef(versionClass);
     }
 };
 
-static std::vector<char> readFile(const char *path) {
-    FILE *file = fopen(path, "rb");
+static void companion_handler(int fd) {
+    vector<uint8_t> config_data = readFile(CONFIG_FILE);
+    vector<uint8_t> target_data = readFile(TARGET_FILE);
 
-    if (!file) return {};
+    int configSize = config_data.size();
+    write(fd, &configSize, sizeof(configSize));
+    if (configSize > 0) write(fd, config_data.data(), configSize);
 
-    fseek(file, 0, SEEK_END);
-    long size = ftell(file);
-    fseek(file, 0, SEEK_SET);
-
-    std::vector<char> vector(size);
-    fread(vector.data(), 1, size, file);
-
-    fclose(file);
-
-    return vector;
+    int targetSize = target_data.size();
+    write(fd, &targetSize, sizeof(targetSize));
+    if (targetSize > 0) write(fd, target_data.data(), targetSize);
 }
 
-static bool checkOtaZip() {
-    std::array<char, 256> buffer{};
-    std::string result;
-    bool found = false;
-
-    std::unique_ptr<FILE, decltype(&pclose)> pipe(
-            popen("unzip -l /system/etc/security/otacerts.zip", "r"), pclose);
-    if (!pipe) return false;
-
-    while (fgets(buffer.data(), buffer.size(), pipe.get()) != nullptr) {
-        result += buffer.data();
-        if (result.find("test") != std::string::npos) {
-            found = true;
-            break;
-        }
-    }
-
-    return found;
-}
-
-static void companion(int fd) {
-
-    std::vector<char> dex, json;
-
-    if (std::filesystem::exists(DEX_PATH)) {
-        dex = readFile(DEX_PATH);
-    }
-
-    if (std::filesystem::exists(CUSTOM_JSON)) {
-        json = readFile(CUSTOM_JSON);
-    } else if (std::filesystem::exists(CUSTOM_JSON_FORK)) {
-        json = readFile(CUSTOM_JSON_FORK);
-    } else if (std::filesystem::exists(DEFAULT_JSON)) {
-        json = readFile(DEFAULT_JSON);
-    }
-
-    size_t dexSize = dex.size();
-    size_t jsonSize = json.size();
-
-    xwrite(fd, &dexSize, sizeof(size_t));
-    xwrite(fd, &jsonSize, sizeof(size_t));
-
-    if (dexSize > 0) {
-        xwrite(fd, dex.data(), dexSize);
-    }
-
-    if (jsonSize > 0) {
-        xwrite(fd, json.data(), jsonSize);
-    }
-
-    std::string ts(TS_PATH);
-    bool trickyStore = std::filesystem::exists(ts) &&
-                       !std::filesystem::exists(ts + "/disable") &&
-                       !std::filesystem::exists(ts + "/remove");
-    xwrite(fd, &trickyStore, sizeof(bool));
-
-    bool testSignedRom = checkOtaZip();
-    xwrite(fd, &testSignedRom, sizeof(bool));
-}
-
-REGISTER_ZYGISK_MODULE(PlayIntegrityFix)
-
-REGISTER_ZYGISK_COMPANION(companion)
+REGISTER_ZYGISK_MODULE(SpoofXModule)
+REGISTER_ZYGISK_COMPANION(companion_handler)
