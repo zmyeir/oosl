@@ -18,10 +18,9 @@ using namespace zygisk;
 #define LOGW(...) __android_log_print(ANDROID_LOG_WARN, LOG_TAG, __VA_ARGS__)
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
 
-#define CONFIG_FILE "/data/adb/fdi.json"
-#define FALLBACK_FILE "/data/local/tmp/fdi.json"
+#define CONFIG_FILE "/data/adb/fdi/config.json"
 
-static vector<uint8_t> readFileContents(const char *filePath) {
+static vector<uint8_t> readConfigFile(const char *filePath) {
     std::error_code ec;
     size_t fileSize = std::filesystem::file_size(filePath, ec);
     if (ec) {
@@ -59,46 +58,69 @@ static bool safeWrite(int fd, const void *buffer, size_t size) {
     }
     return true;
 }
+static std::unordered_map<std::string, std::shared_ptr<json>> cachedTargetProfileMap;
+static std::filesystem::file_time_type lastConfigWriteTime;
 
-//
-// Companion 进程：解析 JSON 并建立 target -> profile 映射
-//
-static void companionHandler(int fd) {
-    LOGD("Companion 进程启动");
+static void updateTargetProfileMapCache() {
+    std::error_code ec;
+    auto currentWriteTime = std::filesystem::last_write_time(CONFIG_FILE, ec);
+    if (ec) {
+        LOGE("无法获取配置文件修改时间: %s", ec.message().c_str());
+        return;
+    }
 
-    vector<uint8_t> configBuffer = readFileContents(CONFIG_FILE);
+    // 如果文件没有变更，直接返回缓存
+    if (currentWriteTime == lastConfigWriteTime) {
+        LOGD("配置文件未变更，使用缓存数据");
+        return;
+    }
+
+    // 读取配置文件
+    vector<uint8_t> configBuffer = readConfigFile(CONFIG_FILE);
     if (configBuffer.empty()) {
-        int zero = 0;
-        safeWrite(fd, &zero, sizeof(zero));
+        LOGE("配置文件为空，无法更新缓存");
         return;
     }
 
     json configJson = json::parse(configBuffer, nullptr, false);
     if (!configJson.is_array()) {
-        int zero = 0;
-        safeWrite(fd, &zero, sizeof(zero));
+        LOGE("配置文件格式无效");
         return;
     }
 
-    unordered_map<string, shared_ptr<json>> targetProfileMap;
+    // 更新缓存
+    cachedTargetProfileMap.clear();
     for (const auto &profile : configJson) {
         if (!profile.contains("targets") || !profile["targets"].is_array()) {
             continue;
         }
 
-        auto profilePtr = make_shared<json>(profile);
+        auto profilePtr = std::make_shared<json>(profile);
         for (const auto &target : profile["targets"]) {
-            string targetName = target.get<string>();
-            targetProfileMap[targetName] = profilePtr;
+            std::string targetName = target.get<std::string>();
+            cachedTargetProfileMap[targetName] = profilePtr;
         }
     }
 
+    // 更新缓存时间
+    lastConfigWriteTime = currentWriteTime;
+    LOGD("配置文件更新，缓存已刷新");
+}
+
+// 伴生进程逻辑
+static void companionHandler(int fd) {
+    LOGD("Companion 进程启动");
+
+    // 更新缓存
+    updateTargetProfileMapCache();
+
+    // 构造 JSON 发送
     json mappedJson;
-    for (const auto &[target, profilePtr] : targetProfileMap) {
+    for (const auto &[target, profilePtr] : cachedTargetProfileMap) {
         mappedJson[target] = *profilePtr;
     }
 
-    string mappedStr = mappedJson.dump();
+    std::string mappedStr = mappedJson.dump();
     int mappedSize = static_cast<int>(mappedStr.size());
 
     safeWrite(fd, &mappedSize, sizeof(mappedSize));
@@ -106,6 +128,7 @@ static void companionHandler(int fd) {
 
     LOGD("Companion 解析完成，发送 target-profile 映射");
 }
+
 
 //
 // Zygisk 模块：根据 target 获取对应的 profile 并修改属性
