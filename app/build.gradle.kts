@@ -1,0 +1,123 @@
+plugins {
+    alias(libs.plugins.android.application)
+}
+
+android {
+    namespace = "org.zrlab.fdi"
+    compileSdk = 35
+    buildToolsVersion = "35.0.1"
+    ndkVersion = "28.0.13004108"
+
+    buildFeatures {
+        prefab = true
+    }
+
+    packaging {
+        resources {
+            excludes += "**"
+        }
+    }
+
+    defaultConfig {
+        applicationId = "org.zrlab.fdi"
+        minSdk = 26
+        targetSdk = 35
+        versionCode = 18700
+        versionName = "v18.7"
+
+        externalNativeBuild {
+            cmake {
+                abiFilters(
+                    "arm64-v8a",
+                    "armeabi-v7a"
+                )
+
+                arguments(
+                    "-DCMAKE_BUILD_TYPE=MinSizeRel",
+                    "-DANDROID_STL=none"
+                )
+
+                cFlags(
+                    "-std=c23",
+                    "-fvisibility=hidden",
+                    "-fvisibility-inlines-hidden"
+                )
+
+                cppFlags(
+                    "-std=c++23",
+                    "-fno-exceptions",
+                    "-fno-rtti",
+                    "-fvisibility=hidden",
+                    "-fvisibility-inlines-hidden"
+                )
+            }
+        }
+    }
+
+    buildTypes {
+        release {
+            isMinifyEnabled = false
+            isShrinkResources = false
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility = JavaVersion.VERSION_21
+        targetCompatibility = JavaVersion.VERSION_21
+    }
+
+    externalNativeBuild {
+        cmake {
+            path = file("src/main/cpp/CMakeLists.txt")
+        }
+    }
+}
+
+dependencies {
+    implementation(libs.cxx)
+}
+
+tasks.register("updateModuleProp") {
+    doLast {
+        val versionName = project.android.defaultConfig.versionName
+        val versionCode = project.android.defaultConfig.versionCode
+
+        val modulePropFile = project.rootDir.resolve("module/module.prop")
+
+        var content = modulePropFile.readText()
+
+        content = content.replace(Regex("version=.*"), "version=$versionName")
+        content = content.replace(Regex("versionCode=.*"), "versionCode=$versionCode")
+
+        modulePropFile.writeText(content)
+    }
+}
+
+tasks.register("copyFiles") {
+    dependsOn("updateModuleProp")
+
+    doLast {
+        val moduleFolder = project.rootDir.resolve("module")
+        val soDir =
+            project.layout.buildDirectory.get().asFile.resolve("intermediates/stripped_native_libs/release/stripReleaseDebugSymbols/out/lib")
+
+        soDir.walk().filter { it.isFile && it.extension == "so" }.forEach { soFile ->
+            val abiFolder = soFile.parentFile.name
+            val destination = moduleFolder.resolve("zygisk/$abiFolder.so")
+            soFile.copyTo(destination, overwrite = true)
+        }
+    }
+}
+
+tasks.register<Zip>("zip") {
+    dependsOn("copyFiles")
+
+    archiveFileName.set("FDI_${project.android.defaultConfig.versionName}.zip")
+    destinationDirectory.set(project.rootDir.resolve("out"))
+
+    from(project.rootDir.resolve("module"))
+}
+
+afterEvaluate {
+    tasks["assembleRelease"].finalizedBy("updateModuleProp", "copyFiles", "zip")
+}
