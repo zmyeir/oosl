@@ -1,65 +1,53 @@
-#include <cstdio>
-#include <fcntl.h>
-#include <unistd.h>
-#include <sys/stat.h>
 #include <android/log.h>
-#include <sys/system_properties.h>
+#include <vector>
+#include <string>
+#include <fstream>
 #include <filesystem>
+
 #include "zygisk.hpp"
 #include "json.hpp"
 
 using json = nlohmann::json;
 using namespace std;
-using zygisk::Api;
-using zygisk::AppSpecializeArgs;
-using zygisk::ServerSpecializeArgs;
+using namespace std::filesystem;
+using namespace zygisk;
 
 #define LOG_TAG "FDI"
 
-#ifdef DEBUG
-    #define LOGD(...) __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, __VA_ARGS__)
-#else
-    #define LOGD(...) ((void)0)
-#endif
+#define LOGD(...) __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, __VA_ARGS__)
+
 #define LOGW(...) __android_log_print(ANDROID_LOG_WARN, LOG_TAG, __VA_ARGS__)
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
 
-#define CONFIG_FILE "/data/adb/fdi.json"
-#define FALLBACK_FILE "/data/local/tmp/fdi.json"
+constexpr string_view CONFIG_FILE = "/data/adb/fdi.json";
+constexpr string_view FALLBACK_FILE = "/data/local/tmp/fdi.json";
 
 struct CompanionData {
     vector<uint8_t> configBuffer;
 };
 
 // **安全读取文件内容**
-static vector<uint8_t> readFileContents(const char *filePath) {
-    FILE *file = fopen(filePath, "rb");
+static vector<uint8_t> readFileContents(string_view filePath) {
+    if (!exists(filePath)) return {};
+
+    ifstream file(string(filePath), ios::binary);
     if (!file) return {};
 
-    struct stat fileStat;
-    if (stat(filePath, &fileStat) != 0) {
-        fclose(file);
-        return {};
-    }
-
-    vector<uint8_t> buffer(fileStat.st_size);
-    if (!buffer.empty()) {
-        fread(buffer.data(), 1, buffer.size(), file);
-    }
-    fclose(file);
+    vector<uint8_t> buffer((istreambuf_iterator<char>(file)), {});
     return buffer;
 }
 
 // **备份配置文件**
-static bool backupConfigFile(const char *sourcePath, const char *backupPath) {
-    std::error_code errorCode;
-    std::filesystem::copy_file(sourcePath, backupPath, std::filesystem::copy_options::overwrite_existing, errorCode);
+static bool backupConfigFile(string_view sourcePath, string_view backupPath) {
+    error_code ec;
+    copy_file(sourcePath, backupPath, copy_options::overwrite_existing, ec);
     
-    if (errorCode) {
-        LOGE("Failed to backup %s to %s: %s", sourcePath, backupPath, errorCode.message().c_str());
+    if (ec) {
+        LOGE("Failed to backup %s to %s: %s", sourcePath.data(), backupPath.data(), ec.message().c_str());
         return false;
     }
-    LOGD("Successfully backed up %s to %s", sourcePath, backupPath);
+    
+    LOGD("Successfully backed up %s to %s", sourcePath.data(), backupPath.data());
     return true;
 }
 
@@ -119,7 +107,7 @@ static void companionHandler(int fd) {
     }
 }
 
-class FakeDeviceInfo : public zygisk::ModuleBase {
+class FakeDeviceInfo : public ModuleBase {
 public:
     void onLoad(Api *api, JNIEnv *env) override {
         this->api = api;
@@ -128,7 +116,7 @@ public:
 
     void preAppSpecialize(AppSpecializeArgs *args) override {
         LOGD("preAppSpecialize");
-        api->setOption(zygisk::DLCLOSE_MODULE_LIBRARY);
+        api->setOption(DLCLOSE_MODULE_LIBRARY);
 
         if (!args || !args->nice_name) return;
 
@@ -190,7 +178,7 @@ public:
 
     void preServerSpecialize(ServerSpecializeArgs *args) override {
         LOGD("preServerSpecialize");
-        api->setOption(zygisk::DLCLOSE_MODULE_LIBRARY);
+        api->setOption(DLCLOSE_MODULE_LIBRARY);
     }
 
 private:
@@ -199,23 +187,15 @@ private:
 
     void updateClassStaticFields(JNIEnv *env, const char *className, const map<string, string> &properties) {
         jclass targetClass = env->FindClass(className);
-        if (!targetClass) {
-            LOGE("Failed to find class %s", className);
-            return;
-        }
+        if (!targetClass) return;
 
         for (const auto &[key, value] : properties) {
             jfieldID fieldID = env->GetStaticFieldID(targetClass, key.c_str(), "Ljava/lang/String;");
-            if (!fieldID) {
-                LOGD("Field '%s' not found in %s, skipping...", key.c_str(), className);
-                continue;
-            }
+            if (!fieldID) continue;
 
             jstring jValue = env->NewStringUTF(value.c_str());
             env->SetStaticObjectField(targetClass, fieldID, jValue);
             env->DeleteLocalRef(jValue);
-
-            LOGD("Set %s.%s = '%s'", className, key.c_str(), value.c_str());
         }
 
         env->DeleteLocalRef(targetClass);
