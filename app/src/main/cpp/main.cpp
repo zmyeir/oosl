@@ -13,8 +13,6 @@
 #include "companion.hpp"
 
 using json = nlohmann::json;
-using namespace std;
-using namespace zygisk;
 
 #define LOG_TAG "FDI"
 #define LOGD(...) __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, __VA_ARGS__)
@@ -34,17 +32,17 @@ static bool safeWrite(int fd, const void *buffer, size_t size) {
     return true;
 }
 
-class FakeDeviceInfo : public ModuleBase {
+class FakeDeviceInfo : public zygisk::ModuleBase {
 public:
-    void onLoad(Api *api, JNIEnv *env) override {
+    void onLoad(zygisk::Api *api, JNIEnv *env) override {
         this->api = api;
         this->env = env;
         LOGD("FakeDeviceInfo 模块加载成功");
     }
 
-    void preAppSpecialize(AppSpecializeArgs *args) override {
+    void preAppSpecialize(zygisk::AppSpecializeArgs *args) override {
         LOGD("启动 preAppSpecialize");
-        api->setOption(DLCLOSE_MODULE_LIBRARY);
+        api->setOption(zygisk::DLCLOSE_MODULE_LIBRARY);
 
         if (!args || !args->nice_name) {
             return;
@@ -75,7 +73,7 @@ public:
             return;
         }
 
-        vector<uint8_t> responseBuffer(responseSize);
+        std::vector<uint8_t> responseBuffer(responseSize);
         if (read(fd, responseBuffer.data(), responseSize) != responseSize) {
             close(fd);
             env->ReleaseStringUTFChars(args->nice_name, processName);
@@ -89,22 +87,22 @@ public:
             LOGD("未匹配到配置项");
             return;
         }
-        auto profile = make_shared<json>(profileJson);
-        LOGD("匹配到配置项: %s", (*profile)["name"].get<string>().c_str());
+        auto profile = std::make_shared<json>(profileJson);
+        LOGD("匹配到配置项: %s", (*profile)["name"].get<std::string>().c_str());
 
         // 使用 unordered_map 存储 Build 相关属性以提高查找效率
-        unordered_map<string, string> buildProperties;
-        unordered_map<string, string> buildVersionProperties;
+        std::unordered_map<std::string, std::string> buildProperties;
+        std::unordered_map<std::string, std::string> buildVersionProperties;
 
         if (profile->contains("build") && (*profile)["build"].is_object()) {
             auto &buildConfig = (*profile)["build"];
             for (auto it = buildConfig.begin(); it != buildConfig.end(); ++it) {
                 if (it.key() == "version" && it.value().is_object()) {
                     for (auto &vEntry : it.value().items()) {
-                        buildVersionProperties[vEntry.key()] = vEntry.value().get<string>();
+                        buildVersionProperties[vEntry.key()] = vEntry.value().get<std::string>();
                     }
                 } else {
-                    buildProperties[it.key()] = it.value().get<string>();
+                    buildProperties[it.key()] = it.value().get<std::string>();
                 }
             }
         }
@@ -118,16 +116,16 @@ public:
         LOGD("preAppSpecialize 处理完成");
     }
 
-    void preServerSpecialize(ServerSpecializeArgs *args) override {
-        api->setOption(DLCLOSE_MODULE_LIBRARY);
+    void preServerSpecialize(zygisk::ServerSpecializeArgs *args) override {
+        api->setOption(zygisk::DLCLOSE_MODULE_LIBRARY);
     }
 
 private:
-    Api *api = nullptr;
+    zygisk::Api *api = nullptr;
     JNIEnv *env = nullptr;
 
     // 更新指定类的静态字段
-    void updateClassStaticFields(JNIEnv *env, const char *className, const unordered_map<string, string> &properties) {
+    void updateClassStaticFields(JNIEnv *env, const char *className, const std::unordered_map<std::string, std::string> &properties) {
         jclass targetClass = env->FindClass(className);
         if (!targetClass) {
             return;
@@ -144,11 +142,11 @@ private:
         env->DeleteLocalRef(targetClass);
     }
 
-    void updateBuildProperties(const unordered_map<string, string> &properties) {
+    void updateBuildProperties(const std::unordered_map<std::string, std::string> &properties) {
         updateClassStaticFields(env, "android/os/Build", properties);
     }
 
-    void updateBuildVersionProperties(const unordered_map<string, string> &properties) {
+    void updateBuildVersionProperties(const std::unordered_map<std::string, std::string> &properties) {
         updateClassStaticFields(env, "android/os/Build$VERSION", properties);
     }
 };
