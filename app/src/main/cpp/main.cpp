@@ -65,26 +65,19 @@ public:
         LOGD("匹配到配置项: %s", (*profile)["name"].get<std::string>().c_str());
 
         // 使用 unordered_map 存储 Build 相关属性以提高查找效率
-        std::unordered_map<std::string, std::string> buildProperties;
-        std::unordered_map<std::string, std::string> buildVersionProperties;
+        std::unordered_map<std::string, std::string> spoofVars;
 
         if (profile->contains("build") && (*profile)["build"].is_object()) {
             auto &buildConfig = (*profile)["build"];
             for (auto it = buildConfig.begin(); it != buildConfig.end(); ++it) {
-                if (it.key() == "version" && it.value().is_object()) {
-                    for (auto &vEntry : it.value().items()) {
-                        buildVersionProperties[vEntry.key()] = vEntry.value().get<std::string>();
-                    }
-                } else {
-                    buildProperties[it.key()] = it.value().get<std::string>();
-                }
+                spoofVars[it.key()] = it.value().get<std::string>();
             }
+            
         }
+        
 
-        if (!buildProperties.empty())
-            updateBuildProperties(buildProperties);
-        if (!buildVersionProperties.empty())
-            updateBuildVersionProperties(buildVersionProperties);
+        if (!spoofVars.empty())
+            updateBuildProperties(spoofVars);
 
         env->ReleaseStringUTFChars(args->nice_name, processName);
         LOGD("preAppSpecialize 处理完成");
@@ -98,32 +91,53 @@ private:
     zygisk::Api *api = nullptr;
     JNIEnv *env = nullptr;
 
-    // 更新指定类的静态字段
-    void updateClassStaticFields(JNIEnv *env, const char *className, const std::unordered_map<std::string, std::string> &properties) {
-        jclass targetClass = env->FindClass(className);
-        if (!targetClass) {
-            return;
-        }
-        for (const auto &prop : properties) {
-            jfieldID fieldID = env->GetStaticFieldID(targetClass, prop.first.c_str(), "Ljava/lang/String;");
-            if (!fieldID) {
-                continue;
+    std::unordered_map<std::string, std::string> spoofVars;
+
+    void UpdateBuildFields() {
+        LOGD("UpdateBuildFields");
+        jclass buildClass = env->FindClass("android/os/Build");
+        LOGD("buildClass: %p", buildClass);
+        jclass versionClass = env->FindClass("android/os/Build$VERSION");
+        LOGD("versionClass: %p", versionClass);
+
+        for (auto &[key, val]: spoofVars) {
+            const char *fieldName = key.c_str();
+
+            jfieldID fieldID = env->GetStaticFieldID(buildClass, fieldName, "Ljava/lang/String;");
+
+            if (env->ExceptionCheck()) {
+                env->ExceptionClear();
+
+                fieldID = env->GetStaticFieldID(versionClass, fieldName, "Ljava/lang/String;");
+
+                if (env->ExceptionCheck()) {
+                    env->ExceptionClear();
+                    continue;
+                }
             }
-            jstring jValue = env->NewStringUTF(prop.second.c_str());
-            env->SetStaticObjectField(targetClass, fieldID, jValue);
-            env->DeleteLocalRef(jValue);
+
+            if (fieldID != nullptr) {
+                const char *value = val.c_str();
+                jstring jValue = env->NewStringUTF(value);
+
+                env->SetStaticObjectField(buildClass, fieldID, jValue);
+
+                env->DeleteLocalRef(jValue);
+
+                if (env->ExceptionCheck()) {
+                    env->ExceptionClear();
+                    continue;
+                }
+
+                LOGI("Set '%s' to '%s'", fieldName, value);
+            }
         }
-        env->DeleteLocalRef(targetClass);
-    }
 
-    void updateBuildProperties(const std::unordered_map<std::string, std::string> &properties) {
-        updateClassStaticFields(env, "android/os/Build", properties);
-    }
-
-    void updateBuildVersionProperties(const std::unordered_map<std::string, std::string> &properties) {
-        updateClassStaticFields(env, "android/os/Build$VERSION", properties);
+        env->DeleteLocalRef(buildClass);
+        env->DeleteLocalRef(versionClass);
     }
 };
+
 
 REGISTER_ZYGISK_MODULE(FakeDeviceInfo)
 REGISTER_ZYGISK_COMPANION(Companion::FakeDeviceInfoD)
