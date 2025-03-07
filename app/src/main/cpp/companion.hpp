@@ -16,9 +16,9 @@
 using json = nlohmann::json;
 using namespace std;
 
-#define LOG_TAG "FDI_COMPANION"
-#define LOGD(...) __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, __VA_ARGS__)
-#define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
+#define COMPANION_TAG "FDI_COMPANION"
+#define LOGD(...) __android_log_print(ANDROID_LOG_DEBUG, COMPANION_TAG, __VA_ARGS__)
+#define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, COMPANION_TAG, __VA_ARGS__)
 
 #define CONFIG_FILE "/data/adb/fdi/config.json"
 
