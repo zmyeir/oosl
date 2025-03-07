@@ -8,13 +8,15 @@
 #include <sys/system_properties.h>
 #include <filesystem>
 #include <unordered_map>
+#include <memory>
+#include <vector>
+#include <string>
 
 #define JSON_NOEXCEPTION 1
 #define JSON_NO_IO 1
 #include "json.hpp"
 
 using json = nlohmann::json;
-using namespace std;
 
 #define COMPANION_TAG "FDI_COMPANION"
 #define LOGD(...) __android_log_print(ANDROID_LOG_DEBUG, COMPANION_TAG, __VA_ARGS__)
@@ -25,11 +27,11 @@ using namespace std;
 namespace Companion {
 
 // **全局缓存：target -> profile 映射**
-inline unordered_map<string, shared_ptr<json>> cachedTargetProfileMap;
+inline std::unordered_map<std::string, std::shared_ptr<json>> cachedTargetProfileMap;
 inline std::filesystem::file_time_type lastConfigWriteTime;
 
 // **读取配置文件内容**
-inline vector<uint8_t> readConfigFile(const char *filePath) {
+inline std::vector<uint8_t> readConfigFile(const char *filePath) {
     std::error_code ec;
     size_t fileSize = std::filesystem::file_size(filePath, ec);
     if (ec) {
@@ -43,7 +45,7 @@ inline vector<uint8_t> readConfigFile(const char *filePath) {
         return {};
     }
 
-    vector<uint8_t> buffer(fileSize);
+    std::vector<uint8_t> buffer(fileSize);
     size_t bytesRead = fread(buffer.data(), 1, buffer.size(), file);
     fclose(file);
 
@@ -69,7 +71,7 @@ inline void updateTargetProfileMapCache() {
         return;
     }
 
-    vector<uint8_t> configBuffer = readConfigFile(CONFIG_FILE);
+    std::vector<uint8_t> configBuffer = readConfigFile(CONFIG_FILE);
     if (configBuffer.empty()) {
         LOGE("配置文件为空，无法更新缓存");
         return;
@@ -87,9 +89,9 @@ inline void updateTargetProfileMapCache() {
         if (!profile.contains("targets") || !profile["targets"].is_array()) {
             continue;
         }
-        auto profilePtr = make_shared<json>(profile);
+        auto profilePtr = std::make_shared<json>(profile);
         for (const auto &target : profile["targets"]) {
-            string targetName = target.get<string>();
+            std::string targetName = target.get<std::string>();
             cachedTargetProfileMap[targetName] = profilePtr;
         }
     }
@@ -124,14 +126,14 @@ inline void FakeDeviceInfoD(int fd) {
         return;
     }
 
-    vector<char> nameBuffer(nameSize + 1);
+    std::vector<char> nameBuffer(nameSize + 1);
     if (read(fd, nameBuffer.data(), nameSize) != nameSize) {
         LOGE("读取进程名失败");
         return;
     }
     nameBuffer[nameSize] = '\0';
 
-    string processName(nameBuffer.data());
+    std::string processName(nameBuffer.data());
     LOGD("收到查询进程名: %s", processName.c_str());
 
     auto it = cachedTargetProfileMap.find(processName);
@@ -140,7 +142,7 @@ inline void FakeDeviceInfoD(int fd) {
         response = *(it->second);
     }
 
-    string responseStr = response.dump();
+    std::string responseStr = response.dump();
     int responseSize = static_cast<int>(responseStr.size());
 
     safeWrite(fd, &responseSize, sizeof(responseSize));
