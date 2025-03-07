@@ -1,26 +1,9 @@
 #ifndef COMPANION_HPP
 #define COMPANION_HPP
 
-#include <cstdio>
-#include <fcntl.h>
-#include <unistd.h>
-#include <android/log.h>
-#include <sys/system_properties.h>
-#include <filesystem>
-#include <unordered_map>
-#include <memory>
-#include <vector>
-#include <string>
-
-#define JSON_NOEXCEPTION 1
-#define JSON_NO_IO 1
-#include "json.hpp"
+#include "utils.hpp"
 
 using json = nlohmann::json;
-
-#define COMPANION_TAG "FDI_COMPANION"
-#define LOGD(...) __android_log_print(ANDROID_LOG_DEBUG, COMPANION_TAG, __VA_ARGS__)
-#define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, COMPANION_TAG, __VA_ARGS__)
 
 #define CONFIG_FILE "/data/adb/fdi/config.json"
 
@@ -98,20 +81,6 @@ inline void updateTargetProfileMapCache() {
 
     lastConfigWriteTime = currentWriteTime;
     LOGD("配置文件更新，缓存已刷新");
-}
-
-// **安全写数据到文件描述符**
-inline bool safeWrite(int fd, const void *buffer, size_t size) {
-    size_t written = 0;
-    const uint8_t *buf = static_cast<const uint8_t*>(buffer);
-    while (written < size) {
-        ssize_t result = write(fd, buf + written, size - written);
-        if (result <= 0) {
-            return false;
-        }
-        written += result;
-    }
-    return true;
 }
 
 // **伴生进程逻辑**
