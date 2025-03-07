@@ -129,7 +129,7 @@ private:
                     continue;
                 }
 
-                LOGI("Set '%s' to '%s'", fieldName, value);
+                LOGD("Set '%s' to '%s'", fieldName, value);
             }
         }
 
