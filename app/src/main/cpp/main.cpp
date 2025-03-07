@@ -77,7 +77,7 @@ public:
         
 
         if (!spoofVars.empty())
-            UpdateBuildFields(spoofVars);
+            UpdateBuildFields();
 
         env->ReleaseStringUTFChars(args->nice_name, processName);
         LOGD("preAppSpecialize 处理完成");
@@ -90,8 +90,6 @@ public:
 private:
     zygisk::Api *api = nullptr;
     JNIEnv *env = nullptr;
-
-    std::unordered_map<std::string, std::string> spoofVars;
 
     void UpdateBuildFields() {
         LOGD("UpdateBuildFields");
