@@ -20,6 +20,20 @@ using namespace zygisk;
 #define LOGD(...) __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, __VA_ARGS__)
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
 
+// **安全写数据到文件描述符**
+static bool safeWrite(int fd, const void *buffer, size_t size) {
+    size_t written = 0;
+    const uint8_t *buf = static_cast<const uint8_t*>(buffer);
+    while (written < size) {
+        ssize_t result = write(fd, buf + written, size - written);
+        if (result <= 0) {
+            return false;
+        }
+        written += result;
+    }
+    return true;
+}
+
 class FakeDeviceInfo : public ModuleBase {
 public:
     void onLoad(Api *api, JNIEnv *env) override {
