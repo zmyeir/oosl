@@ -64,17 +64,9 @@ public:
         auto profile = std::make_shared<json>(profileJson);
         LOGD("匹配到配置项: %s", (*profile)["name"].get<std::string>().c_str());
 
-        // 使用 unordered_map 存储 Build 相关属性以提高查找效率
-        std::unordered_map<std::string, std::string> spoofVars;
-
         if (profile->contains("build") && (*profile)["build"].is_object()) {
-            auto &buildConfig = (*profile)["build"];
-            for (auto it = buildConfig.begin(); it != buildConfig.end(); ++it) {
-                spoofVars[it.key()] = it.value().get<std::string>();
-            }
-            
+            spoofVars = (*profile)["build"].get<std::unordered_map<std::string, std::string>>();
         }
-        
 
         if (!spoofVars.empty())
             UpdateBuildFields(spoofVars);
