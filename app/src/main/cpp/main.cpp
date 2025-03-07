@@ -34,12 +34,10 @@ public:
             return;
         }
 
-        // 主进程向伴生进程发送进程名
         int nameSize = static_cast<int>(strlen(processName));
         safeWrite(fd, &nameSize, sizeof(nameSize));
         safeWrite(fd, processName, nameSize);
 
-        // 读取伴生进程返回的 JSON 数据长度
         int responseSize = 0;
         if (read(fd, &responseSize, sizeof(responseSize)) != sizeof(responseSize) || responseSize <= 0) {
             close(fd);
@@ -68,8 +66,9 @@ public:
             spoofVars = (*profile)["build"].get<std::unordered_map<std::string, std::string>>();
         }
 
-        if (!spoofVars.empty())
-            UpdateBuildFields(spoofVars);
+        if (!spoofVars.empty()) {
+            UpdateBuildFields();
+        }
 
         env->ReleaseStringUTFChars(args->nice_name, processName);
         LOGD("preAppSpecialize 处理完成");
@@ -82,50 +81,52 @@ public:
 private:
     zygisk::Api *api = nullptr;
     JNIEnv *env = nullptr;
-
-    void UpdateBuildFields(std::unordered_map<std::string, std::string>& spoofVars) {
+    std::unordered_map<std::string, std::string> spoofVars;
+    
+    void UpdateBuildFields() {
         LOGD("UpdateBuildFields");
         jclass buildClass = env->FindClass("android/os/Build");
         LOGD("buildClass: %p", buildClass);
         jclass versionClass = env->FindClass("android/os/Build$VERSION");
         LOGD("versionClass: %p", versionClass);
-
+    
         for (auto &[key, val]: spoofVars) {
             const char *fieldName = key.c_str();
-
+    
             jfieldID fieldID = env->GetStaticFieldID(buildClass, fieldName, "Ljava/lang/String;");
-
+    
             if (env->ExceptionCheck()) {
                 env->ExceptionClear();
-
+    
                 fieldID = env->GetStaticFieldID(versionClass, fieldName, "Ljava/lang/String;");
-
+    
                 if (env->ExceptionCheck()) {
                     env->ExceptionClear();
                     continue;
                 }
             }
-
+    
             if (fieldID != nullptr) {
                 const char *value = val.c_str();
                 jstring jValue = env->NewStringUTF(value);
-
+    
                 env->SetStaticObjectField(buildClass, fieldID, jValue);
-
+    
                 env->DeleteLocalRef(jValue);
-
+    
                 if (env->ExceptionCheck()) {
                     env->ExceptionClear();
                     continue;
                 }
-
+    
                 LOGD("Set '%s' to '%s'", fieldName, value);
             }
         }
-
+    
         env->DeleteLocalRef(buildClass);
         env->DeleteLocalRef(versionClass);
     }
+    
 };
 
 
