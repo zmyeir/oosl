@@ -77,7 +77,7 @@ public:
         
 
         if (!spoofVars.empty())
-            UpdateBuildFields();
+            UpdateBuildFields(spoofVars);
 
         env->ReleaseStringUTFChars(args->nice_name, processName);
         LOGD("preAppSpecialize 处理完成");
@@ -91,7 +91,7 @@ private:
     zygisk::Api *api = nullptr;
     JNIEnv *env = nullptr;
 
-    void UpdateBuildFields() {
+    void UpdateBuildFields(std::unordered_map<std::string, std::string>& spoofVars) {
         LOGD("UpdateBuildFields");
         jclass buildClass = env->FindClass("android/os/Build");
         LOGD("buildClass: %p", buildClass);
