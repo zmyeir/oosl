@@ -14,7 +14,7 @@ inline std::unordered_map<std::string, std::shared_ptr<json>> cachedTargetProfil
 inline std::filesystem::file_time_type lastConfigWriteTime;
 
 // **读取配置文件内容**
-inline std::vector<uint8_t> readConfigFile(const char *filePath) {
+inline std::string readConfigFile(const char *filePath) {
     std::error_code ec;
     size_t fileSize = std::filesystem::file_size(filePath, ec);
     if (ec) {
@@ -28,15 +28,14 @@ inline std::vector<uint8_t> readConfigFile(const char *filePath) {
         return {};
     }
 
-    std::vector<uint8_t> buffer(fileSize);
-    size_t bytesRead = fread(buffer.data(), 1, buffer.size(), file);
-    fclose(file);
-
-    if (bytesRead != buffer.size()) {
+    std::string buffer(fileSize, '\0');  // 直接分配 std::string 避免额外拷贝
+    if (fread(buffer.data(), 1, fileSize, file) != fileSize) {
         LOGE("读取文件失败: %s", filePath);
+        fclose(file);
         return {};
     }
 
+    fclose(file);
     return buffer;
 }
 
@@ -54,20 +53,19 @@ inline void updateTargetProfileMapCache() {
         return;
     }
 
-    std::vector<uint8_t> configBuffer = readConfigFile(CONFIG_FILE);
-    if (configBuffer.empty()) {
+    std::string configStr = readConfigFile(CONFIG_FILE);
+    if (configStr.empty()) {
         LOGE("配置文件为空，无法更新缓存");
         return;
     }
 
-    json configJson = json::parse(configBuffer, nullptr, false);
+    json configJson = json::parse(configStr, nullptr, false);
     if (!configJson.is_array()) {
         LOGE("配置文件格式无效");
         return;
     }
 
     cachedTargetProfileMap.clear();
-    LOGD("配置文件合法，清除缓存");
     for (const auto &profile : configJson) {
         if (!profile.contains("targets") || !profile["targets"].is_array()) {
             continue;
