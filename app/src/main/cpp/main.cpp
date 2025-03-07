@@ -4,9 +4,9 @@
 #include <android/log.h>
 #include <sys/system_properties.h>
 #include <filesystem>
+#include <unordered_map>
 #include "zygisk.hpp"
 #include "json.hpp"
-#include <unordered_map>
 
 using json = nlohmann::json;
 using namespace std;
@@ -20,6 +20,7 @@ using namespace zygisk;
 
 #define CONFIG_FILE "/data/adb/fdi/config.json"
 
+// 读取配置文件内容
 static vector<uint8_t> readConfigFile(const char *filePath) {
     std::error_code ec;
     size_t fileSize = std::filesystem::file_size(filePath, ec);
@@ -44,8 +45,10 @@ static vector<uint8_t> readConfigFile(const char *filePath) {
     }
 
     return buffer;
+    LOGD("文件读取成功: %s", filePath);
 }
 
+// 安全写数据到文件描述符
 static bool safeWrite(int fd, const void *buffer, size_t size) {
     size_t written = 0;
     const uint8_t *buf = static_cast<const uint8_t*>(buffer);
@@ -58,9 +61,12 @@ static bool safeWrite(int fd, const void *buffer, size_t size) {
     }
     return true;
 }
-static std::unordered_map<std::string, std::shared_ptr<json>> cachedTargetProfileMap;
+
+// 全局缓存：target->profile 映射
+static unordered_map<string, shared_ptr<json>> cachedTargetProfileMap;
 static std::filesystem::file_time_type lastConfigWriteTime;
 
+// 更新缓存：如果配置文件发生变化则重新加载
 static void updateTargetProfileMapCache() {
     std::error_code ec;
     auto currentWriteTime = std::filesystem::last_write_time(CONFIG_FILE, ec);
@@ -69,13 +75,12 @@ static void updateTargetProfileMapCache() {
         return;
     }
 
-    // 如果文件没有变更，直接返回缓存
+    // 如果文件未变更，则直接使用缓存数据
     if (currentWriteTime == lastConfigWriteTime) {
         LOGD("配置文件未变更，使用缓存数据");
         return;
     }
 
-    // 读取配置文件
     vector<uint8_t> configBuffer = readConfigFile(CONFIG_FILE);
     if (configBuffer.empty()) {
         LOGE("配置文件为空，无法更新缓存");
@@ -88,52 +93,68 @@ static void updateTargetProfileMapCache() {
         return;
     }
 
-    // 更新缓存
     cachedTargetProfileMap.clear();
+    LOGD("配置文件合法，清除缓存");
     for (const auto &profile : configJson) {
         if (!profile.contains("targets") || !profile["targets"].is_array()) {
             continue;
         }
-
-        auto profilePtr = std::make_shared<json>(profile);
+        auto profilePtr = make_shared<json>(profile);
         for (const auto &target : profile["targets"]) {
-            std::string targetName = target.get<std::string>();
+            string targetName = target.get<string>();
             cachedTargetProfileMap[targetName] = profilePtr;
         }
     }
 
-    // 更新缓存时间
     lastConfigWriteTime = currentWriteTime;
     LOGD("配置文件更新，缓存已刷新");
 }
 
-// 伴生进程逻辑
+// 伴生进程逻辑：接收主进程传入的进程名，并返回对应的 profile（如果存在）
 static void companionHandler(int fd) {
     LOGD("Companion 进程启动");
 
-    // 更新缓存
+    // 更新缓存数据
     updateTargetProfileMapCache();
 
-    // 构造 JSON 发送
-    json mappedJson;
-    for (const auto &[target, profilePtr] : cachedTargetProfileMap) {
-        mappedJson[target] = *profilePtr;
+    // 读取主进程发送的进程名长度
+    int nameSize = 0;
+    if (read(fd, &nameSize, sizeof(nameSize)) != sizeof(nameSize) || nameSize <= 0) {
+        LOGE("读取进程名大小失败");
+        return;
     }
 
-    std::string mappedStr = mappedJson.dump();
-    int mappedSize = static_cast<int>(mappedStr.size());
+    vector<char> nameBuffer(nameSize + 1);
+    if (read(fd, nameBuffer.data(), nameSize) != nameSize) {
+        LOGE("读取进程名失败");
+        return;
+    }
+    nameBuffer[nameSize] = '\0';
 
-    safeWrite(fd, &mappedSize, sizeof(mappedSize));
-    safeWrite(fd, mappedStr.data(), mappedStr.size());
+    string processName(nameBuffer.data());
+    LOGD("收到查询进程名: %s", processName.c_str());
 
-    LOGD("Companion 解析完成，发送 target-profile 映射");
+    // 查找对应配置项
+    auto it = cachedTargetProfileMap.find(processName);
+    json response;
+    if (it != cachedTargetProfileMap.end()) {
+        response = *(it->second);
+    }
+
+    string responseStr = response.dump();
+    int responseSize = static_cast<int>(responseStr.size());
+
+    // 发送 JSON 数据长度和内容
+    safeWrite(fd, &responseSize, sizeof(responseSize));
+    if (responseSize > 0) {
+        safeWrite(fd, responseStr.data(), responseStr.size());
+    }
+
+    LOGD("Companion 发送配置完成");
 }
 
-
-//
-// Zygisk 模块：根据 target 获取对应的 profile 并修改属性
-//
-class FakeDeviceInfo : public zygisk::ModuleBase {
+// Zygisk 模块：根据 target 获取对应的 profile 并修改 Build 属性
+class FakeDeviceInfo : public ModuleBase {
 public:
     void onLoad(Api *api, JNIEnv *env) override {
         this->api = api;
@@ -142,8 +163,8 @@ public:
     }
 
     void preAppSpecialize(AppSpecializeArgs *args) override {
-        LOGD("preAppSpecialize 开始");
-        api->setOption(zygisk::DLCLOSE_MODULE_LIBRARY);
+        LOGD("启动 preAppSpecialize");
+        api->setOption(DLCLOSE_MODULE_LIBRARY);
 
         if (!args || !args->nice_name) {
             return;
@@ -161,32 +182,38 @@ public:
             return;
         }
 
-        int mappedSize = 0;
-        if (read(fd, &mappedSize, sizeof(mappedSize)) != sizeof(mappedSize) || mappedSize <= 0) {
+        // 主进程向伴生进程发送自身进程名
+        int nameSize = static_cast<int>(strlen(processName));
+        safeWrite(fd, &nameSize, sizeof(nameSize));
+        safeWrite(fd, processName, nameSize);
+
+        // 读取伴生进程返回的 JSON 数据长度
+        int responseSize = 0;
+        if (read(fd, &responseSize, sizeof(responseSize)) != sizeof(responseSize) || responseSize <= 0) {
             close(fd);
             env->ReleaseStringUTFChars(args->nice_name, processName);
             return;
         }
 
-        vector<uint8_t> mappedBuffer(mappedSize);
-        if (read(fd, mappedBuffer.data(), mappedSize) != mappedSize) {
+        vector<uint8_t> responseBuffer(responseSize);
+        if (read(fd, responseBuffer.data(), responseSize) != responseSize) {
             close(fd);
             env->ReleaseStringUTFChars(args->nice_name, processName);
             return;
         }
         close(fd);
 
-        json targetProfileMap = json::parse(mappedBuffer, nullptr, false);
-        if (!targetProfileMap.is_object() || !targetProfileMap.contains(processName)) {
+        json profileJson = json::parse(responseBuffer, nullptr, false);
+        if (!profileJson.is_object()) {
             env->ReleaseStringUTFChars(args->nice_name, processName);
             return;
         }
-
-        shared_ptr<json> profile = make_shared<json>(targetProfileMap[processName]);
+        auto profile = make_shared<json>(profileJson);
         LOGD("匹配到配置项: %s", (*profile)["name"].get<string>().c_str());
 
-        map<string, string> buildProperties;
-        map<string, string> buildVersionProperties;
+        // 使用 unordered_map 存储 Build 相关属性以提高查找效率
+        unordered_map<string, string> buildProperties;
+        unordered_map<string, string> buildVersionProperties;
 
         if (profile->contains("build") && (*profile)["build"].is_object()) {
             auto &buildConfig = (*profile)["build"];
@@ -211,25 +238,24 @@ public:
     }
 
     void preServerSpecialize(ServerSpecializeArgs *args) override {
-        api->setOption(zygisk::DLCLOSE_MODULE_LIBRARY);
+        api->setOption(DLCLOSE_MODULE_LIBRARY);
     }
 
 private:
     Api *api = nullptr;
     JNIEnv *env = nullptr;
 
-    void updateClassStaticFields(JNIEnv *env, const char *className, const map<string, string> &properties) {
+    // 更新指定类的静态字段
+    void updateClassStaticFields(JNIEnv *env, const char *className, const unordered_map<string, string> &properties) {
         jclass targetClass = env->FindClass(className);
         if (!targetClass) {
             return;
         }
-
         for (const auto &prop : properties) {
             jfieldID fieldID = env->GetStaticFieldID(targetClass, prop.first.c_str(), "Ljava/lang/String;");
             if (!fieldID) {
                 continue;
             }
-
             jstring jValue = env->NewStringUTF(prop.second.c_str());
             env->SetStaticObjectField(targetClass, fieldID, jValue);
             env->DeleteLocalRef(jValue);
@@ -237,11 +263,11 @@ private:
         env->DeleteLocalRef(targetClass);
     }
 
-    void updateBuildProperties(const map<string, string> &properties) {
+    void updateBuildProperties(const unordered_map<string, string> &properties) {
         updateClassStaticFields(env, "android/os/Build", properties);
     }
 
-    void updateBuildVersionProperties(const map<string, string> &properties) {
+    void updateBuildVersionProperties(const unordered_map<string, string> &properties) {
         updateClassStaticFields(env, "android/os/Build$VERSION", properties);
     }
 };
