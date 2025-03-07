@@ -5,7 +5,8 @@
 
 using json = nlohmann::json;
 
-#define CONFIG_FILE "/data/adb/fdi/config.json"
+constexpr const char* CONFIG_FILE = "/data/adb/fdi/config.json";
+constexpr const char* CONFIG_BACKUP_FILE = "/data/adb/fdi/do_not_edit_it";
 
 namespace Companion {
 
@@ -14,7 +15,7 @@ inline std::unordered_map<std::string, std::shared_ptr<json>> cachedTargetProfil
 inline std::filesystem::file_time_type lastConfigWriteTime;
 
 // **读取配置文件内容**
-inline std::string readConfigFile(const char *filePath) {
+inline std::string readConfigFile(const char* filePath) {
     std::error_code ec;
     size_t fileSize = std::filesystem::file_size(filePath, ec);
     if (ec) {
@@ -22,13 +23,13 @@ inline std::string readConfigFile(const char *filePath) {
         return {};
     }
 
-    FILE *file = fopen(filePath, "rb");
+    FILE* file = fopen(filePath, "rb");
     if (!file) {
         LOGE("无法打开文件: %s", filePath);
         return {};
     }
 
-    std::string buffer(fileSize, '\0');  // 直接分配 std::string 避免额外拷贝
+    std::string buffer(fileSize, '\0');
     if (fread(buffer.data(), 1, fileSize, file) != fileSize) {
         LOGE("读取文件失败: %s", filePath);
         fclose(file);
@@ -39,7 +40,36 @@ inline std::string readConfigFile(const char *filePath) {
     return buffer;
 }
 
-// **更新缓存：如果配置文件发生变化则重新加载**
+// **备份配置文件**
+inline void backupConfigFile() {
+    std::error_code ec;
+    std::filesystem::copy_file(CONFIG_FILE, CONFIG_BACKUP_FILE, std::filesystem::copy_options::overwrite_existing, ec);
+    if (ec) {
+        LOGE("配置文件备份失败: %s", ec.message().c_str());
+    } else {
+        LOGD("配置文件已备份至 %s", CONFIG_BACKUP_FILE);
+    }
+}
+
+// **尝试读取并解析 JSON 配置**
+inline bool loadConfigFromFile(const char* filePath, json& configJson) {
+    std::string configStr = readConfigFile(filePath);
+    if (configStr.empty()) {
+        LOGE("配置文件为空: %s", filePath);
+        return false;
+    }
+
+    json parsedJson = json::parse(configStr, nullptr, false);
+    if (!parsedJson.is_array()) {
+        LOGE("配置文件格式无效: %s", filePath);
+        return false;
+    }
+
+    configJson = std::move(parsedJson);
+    return true;
+}
+
+// **更新缓存：支持回退机制**
 inline void updateTargetProfileMapCache() {
     std::error_code ec;
     auto currentWriteTime = std::filesystem::last_write_time(CONFIG_FILE, ec);
@@ -53,25 +83,23 @@ inline void updateTargetProfileMapCache() {
         return;
     }
 
-    std::string configStr = readConfigFile(CONFIG_FILE);
-    if (configStr.empty()) {
-        LOGE("配置文件为空，无法更新缓存");
-        return;
+    json configJson;
+    if (!loadConfigFromFile(CONFIG_FILE, configJson)) {
+        LOGE("主配置文件加载失败，尝试加载备份文件...");
+        if (!loadConfigFromFile(CONFIG_BACKUP_FILE, configJson)) {
+            LOGE("备份配置文件也无法加载，放弃更新缓存");
+            return;
+        }
     }
 
-    json configJson = json::parse(configStr, nullptr, false);
-    if (!configJson.is_array()) {
-        LOGE("配置文件格式无效");
-        return;
-    }
-
+    // 解析成功后更新缓存
     cachedTargetProfileMap.clear();
-    for (const auto &profile : configJson) {
+    for (const auto& profile : configJson) {
         if (!profile.contains("targets") || !profile["targets"].is_array()) {
             continue;
         }
         auto profilePtr = std::make_shared<json>(profile);
-        for (const auto &target : profile["targets"]) {
+        for (const auto& target : profile["targets"]) {
             std::string targetName = target.get<std::string>();
             cachedTargetProfileMap[targetName] = profilePtr;
         }
@@ -79,6 +107,9 @@ inline void updateTargetProfileMapCache() {
 
     lastConfigWriteTime = currentWriteTime;
     LOGD("配置文件更新，缓存已刷新");
+
+    // 备份配置文件
+    backupConfigFile();
 }
 
 // **伴生进程逻辑**
