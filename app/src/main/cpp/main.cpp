@@ -77,7 +77,7 @@ public:
         
 
         if (!spoofVars.empty())
-            updateBuildProperties(spoofVars);
+            UpdateBuildFields(spoofVars);
 
         env->ReleaseStringUTFChars(args->nice_name, processName);
         LOGD("preAppSpecialize 处理完成");
