@@ -1,7 +1,5 @@
 #include "utils.hpp"
-
 #include "zygisk.hpp"
-
 #include "companion.hpp"
 
 using json = nlohmann::json;
@@ -63,11 +61,26 @@ public:
         LOGD("匹配到配置项: %s", (*profile)["name"].get<std::string>().c_str());
 
         if (profile->contains("build") && (*profile)["build"].is_object()) {
-            spoofVars = (*profile)["build"].get<std::unordered_map<std::string, std::string>>();
+            fakeBuildVars = (*profile)["build"].get<std::unordered_map<std::string, std::string>>();
         }
 
-        if (!spoofVars.empty()) {
+        if (profile->contains("locale") && (*profile)["locale"].is_array()) {
+            for (const auto& localeItem : (*profile)["locale"]) {
+                if (!localeItem.contains("tz") || !localeItem.contains("lang")) {
+                    continue;
+                }
+                fakeTimezone = localeItem["tz"].get<std::string>();
+                fakeLanguage = localeItem["lang"].get<std::string>();
+                break;  // 只使用第一个匹配项
+            }
+        }
+
+        if (!fakeBuildVars.empty()) {
             UpdateBuildFields();
+        }
+
+        if (!fakeLanguage.empty() || !fakeTimezone.empty()) {
+            UpdateLocaleAndTimezone();
         }
 
         env->ReleaseStringUTFChars(args->nice_name, processName);
@@ -81,27 +94,27 @@ public:
 private:
     zygisk::Api *api = nullptr;
     JNIEnv *env = nullptr;
-    std::unordered_map<std::string, std::string> spoofVars;
+    std::unordered_map<std::string, std::string> fakeBuildVars;
+    std::string fakeTimezone;
+    std::string fakeLanguage;
 
     void UpdateBuildFields() {
         LOGD("UpdateBuildFields");
         jclass buildClass = env->FindClass("android/os/Build");
         jclass versionClass = env->FindClass("android/os/Build$VERSION");
-    
-        for (auto &[key, val] : spoofVars) {
+
+        for (auto &[key, val] : fakeBuildVars) {
             const char *fieldName = key.c_str();
             jfieldID fieldID = nullptr;
             bool isStringField = true;
-    
-            // 先尝试在 android.os.Build 里面找 String 字段
+
             fieldID = env->GetStaticFieldID(buildClass, fieldName, "Ljava/lang/String;");
             if (env->ExceptionCheck()) {
                 env->ExceptionClear();
                 fieldID = env->GetStaticFieldID(versionClass, fieldName, "Ljava/lang/String;");
-    
+
                 if (env->ExceptionCheck()) {
                     env->ExceptionClear();
-                    // 再尝试 int 类型
                     fieldID = env->GetStaticFieldID(versionClass, fieldName, "I");
                     if (!env->ExceptionCheck() && fieldID != nullptr) {
                         isStringField = false;
@@ -111,7 +124,7 @@ private:
                     }
                 }
             }
-    
+
             if (fieldID != nullptr) {
                 if (isStringField) {
                     jstring jValue = env->NewStringUTF(val.c_str());
@@ -127,19 +140,52 @@ private:
                     env->SetStaticIntField(versionClass, fieldID, intValue);
                     LOGD("Set int field '%s' to %d", fieldName, intValue);
                 }
-    
+
                 if (env->ExceptionCheck()) {
                     env->ExceptionClear();
                     continue;
                 }
             }
         }
-    
+
         env->DeleteLocalRef(buildClass);
         env->DeleteLocalRef(versionClass);
     }
-};
 
+    void UpdateLocaleAndTimezone() {
+        LOGD("UpdateLocaleAndTimezone");
+
+        if (!fakeLanguage.empty()) {
+            jclass localeClass = env->FindClass("java/util/Locale");
+            jmethodID localeCtor = env->GetMethodID(localeClass, "<init>", "(Ljava/lang/String;)V");
+            jmethodID setDefault = env->GetStaticMethodID(localeClass, "setDefault", "(Ljava/util/Locale;)V");
+
+            jstring jLang = env->NewStringUTF(fakeLanguage.c_str());
+            jobject newLocale = env->NewObject(localeClass, localeCtor, jLang);
+            env->CallStaticVoidMethod(localeClass, setDefault, newLocale);
+
+            env->DeleteLocalRef(jLang);
+            env->DeleteLocalRef(newLocale);
+            env->DeleteLocalRef(localeClass);
+            LOGD("语言伪造完成: %s", fakeLanguage.c_str());
+        }
+
+        if (!fakeTimezone.empty()) {
+            jclass timezoneClass = env->FindClass("java/util/TimeZone");
+            jmethodID getTimeZone = env->GetStaticMethodID(timezoneClass, "getTimeZone", "(Ljava/lang/String;)Ljava/util/TimeZone;");
+            jmethodID setDefault = env->GetStaticMethodID(timezoneClass, "setDefault", "(Ljava/util/TimeZone;)V");
+
+            jstring jTz = env->NewStringUTF(fakeTimezone.c_str());
+            jobject newTimezone = env->CallStaticObjectMethod(timezoneClass, getTimeZone, jTz);
+            env->CallStaticVoidMethod(timezoneClass, setDefault, newTimezone);
+
+            env->DeleteLocalRef(jTz);
+            env->DeleteLocalRef(newTimezone);
+            env->DeleteLocalRef(timezoneClass);
+            LOGD("时区伪造完成: %s", fakeTimezone.c_str());
+        }
+    }
+};
 
 REGISTER_ZYGISK_MODULE(FakeDeviceInfo)
 REGISTER_ZYGISK_COMPANION(Companion::FakeDeviceInfoD)
