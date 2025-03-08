@@ -16,23 +16,26 @@ inline std::filesystem::file_time_type lastConfigWriteTime;
 
 // **备份配置文件**
 inline void backupConfigFile() {
+    LOGD("开始备份配置文件...");
     std::error_code ec;
     std::filesystem::copy_file(CONFIG_FILE, CONFIG_BACKUP_FILE, std::filesystem::copy_options::overwrite_existing, ec);
     if (ec) {
         LOGE("配置文件备份失败: %s", ec.message().c_str());
     } else {
-        LOGD("配置文件已备份至 %s", CONFIG_BACKUP_FILE);
+        LOGD("配置文件已成功备份至 %s", CONFIG_BACKUP_FILE);
     }
 }
 
 // **尝试读取并解析 JSON 配置**
 inline bool loadConfigFromFile(const char* filePath, json& configJson) {
+    LOGD("尝试从文件加载配置: %s", filePath);
     std::error_code ec;
     size_t fileSize = std::filesystem::file_size(filePath, ec);
     if (ec) {
         LOGE("无法获取文件大小: %s, 错误: %s", filePath, ec.message().c_str());
         return false;
     }
+    LOGD("文件大小: %zu 字节", fileSize);
 
     FILE* file = fopen(filePath, "rb");
     if (!file) {
@@ -47,6 +50,7 @@ inline bool loadConfigFromFile(const char* filePath, json& configJson) {
         return false;
     }
     fclose(file);
+    LOGD("成功读取文件: %s", filePath);
 
     json parsedJson = json::parse(buffer, nullptr, false);
     if (!parsedJson.is_array()) {
@@ -55,10 +59,12 @@ inline bool loadConfigFromFile(const char* filePath, json& configJson) {
     }
 
     configJson = std::move(parsedJson);
+    LOGD("成功解析 JSON 配置文件: %s", filePath);
     return true;
 }
 
 inline void updateTargetProfileMapCache() {
+    LOGD("检查配置文件是否有更新...");
     std::error_code ec;
     auto currentWriteTime = std::filesystem::last_write_time(CONFIG_FILE, ec);
     if (ec) {
@@ -71,20 +77,22 @@ inline void updateTargetProfileMapCache() {
         return;
     }
 
+    LOGD("检测到配置文件更新，开始重新加载...");
     json configJson;
     bool usingBackup = false;
 
     if (!loadConfigFromFile(CONFIG_FILE, configJson)) {
         LOGE("主配置文件加载失败，尝试加载备份文件...");
-
         if (!loadConfigFromFile(CONFIG_BACKUP_FILE, configJson)) {
             LOGE("备份配置文件也无法加载，放弃更新缓存");
             return;
         }
+        LOGD("成功从备份文件加载配置");
         usingBackup = true;
     }
 
     cachedTargetProfileMap.clear();
+    LOGD("清空旧缓存");
 
     size_t validProfileCount = 0;
 
@@ -103,6 +111,7 @@ inline void updateTargetProfileMapCache() {
         for (const auto& target : profile["targets"]) {
             std::string targetName = target.get<std::string>();
             cachedTargetProfileMap[targetName] = profilePtr;
+            LOGD("添加映射: %s -> profile", targetName.c_str());
         }
 
         validProfileCount++;
@@ -114,7 +123,6 @@ inline void updateTargetProfileMapCache() {
     }
 
     lastConfigWriteTime = currentWriteTime;
-
     LOGD("配置文件更新，缓存已刷新，总映射数：%zu", cachedTargetProfileMap.size());
 
     if (!usingBackup) {
@@ -133,6 +141,7 @@ inline void FakeDeviceInfoD(int fd) {
         LOGE("读取进程名大小失败");
         return;
     }
+    LOGD("接收到进程名大小: %d", nameSize);
 
     std::vector<char> nameBuffer(nameSize + 1);
     if (read(fd, nameBuffer.data(), nameSize) != nameSize) {
@@ -148,17 +157,21 @@ inline void FakeDeviceInfoD(int fd) {
     json response;
     if (it != cachedTargetProfileMap.end()) {
         response = *(it->second);
+        LOGD("找到匹配的配置: %s", processName.c_str());
+    } else {
+        LOGD("未找到匹配的配置: %s", processName.c_str());
     }
 
     std::string responseStr = response.dump();
     int responseSize = static_cast<int>(responseStr.size());
 
+    LOGD("准备发送响应数据，大小: %d 字节", responseSize);
     safeWrite(fd, &responseSize, sizeof(responseSize));
     if (responseSize > 0) {
         safeWrite(fd, responseStr.data(), responseStr.size());
     }
 
-    LOGD("Companion 发送配置完成");
+    LOGD("Companion 进程结束");
 }
 
 } // namespace Companion
