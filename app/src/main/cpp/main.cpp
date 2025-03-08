@@ -64,12 +64,6 @@ public:
             spoofBuild = (*profile)["build"].get<std::unordered_map<std::string, std::string>>();
         }
 
-        // 添加时区伪装
-        if (profile->contains("timezone") && (*profile)["timezone"].is_string()) {
-            spoofTimezone = (*profile)["timezone"].get<std::string>();
-            LOGD("Will spoof timezone to: %s", spoofTimezone.c_str());
-        }
-
         // 添加语言伪装
         if (profile->contains("locale") && (*profile)["locale"].is_string()) {
             spoofLocale = (*profile)["locale"].get<std::string>();
@@ -78,10 +72,6 @@ public:
 
         if (!spoofBuild.empty()) {
             UpdateBuildFields();
-        }
-
-        if (!spoofTimezone.empty()) {
-            UpdateTimezone();
         }
 
         if (!spoofLocale.empty()) {
@@ -157,65 +147,6 @@ private:
     
         env->DeleteLocalRef(buildClass);
         env->DeleteLocalRef(versionClass);
-    }
-
-    void UpdateTimezone() {
-        LOGD("Updating timezone to: %s", spoofTimezone.c_str());
-        
-        // 获取 TimeZone 类
-        jclass timeZoneClass = env->FindClass("java/util/TimeZone");
-        if (!timeZoneClass || env->ExceptionCheck()) {
-            if (env->ExceptionCheck()) env->ExceptionClear();
-            LOGD("Failed to find TimeZone class");
-            return;
-        }
-        
-        // 获取 getTimeZone 静态方法
-        jmethodID getTimeZoneMethod = env->GetStaticMethodID(timeZoneClass, "getTimeZone", 
-                                                           "(Ljava/lang/String;)Ljava/util/TimeZone;");
-        if (!getTimeZoneMethod || env->ExceptionCheck()) {
-            if (env->ExceptionCheck()) env->ExceptionClear();
-            LOGD("Failed to find getTimeZone method");
-            env->DeleteLocalRef(timeZoneClass);
-            return;
-        }
-        
-        // 获取 setDefault 静态方法
-        jmethodID setDefaultMethod = env->GetStaticMethodID(timeZoneClass, "setDefault", 
-                                                          "(Ljava/util/TimeZone;)V");
-        if (!setDefaultMethod || env->ExceptionCheck()) {
-            if (env->ExceptionCheck()) env->ExceptionClear();
-            LOGD("Failed to find setDefault method");
-            env->DeleteLocalRef(timeZoneClass);
-            return;
-        }
-        
-        // 创建时区ID字符串
-        jstring timezoneId = env->NewStringUTF(spoofTimezone.c_str());
-        
-        // 获取指定时区
-        jobject timeZone = env->CallStaticObjectMethod(timeZoneClass, getTimeZoneMethod, timezoneId);
-        if (!timeZone || env->ExceptionCheck()) {
-            if (env->ExceptionCheck()) env->ExceptionClear();
-            LOGD("Failed to get timezone instance");
-            env->DeleteLocalRef(timezoneId);
-            env->DeleteLocalRef(timeZoneClass);
-            return;
-        }
-        
-        // 设置为默认时区
-        env->CallStaticVoidMethod(timeZoneClass, setDefaultMethod, timeZone);
-        if (env->ExceptionCheck()) {
-            env->ExceptionClear();
-            LOGD("Failed to set default timezone");
-        } else {
-            LOGD("Successfully set timezone to: %s", spoofTimezone.c_str());
-        }
-        
-        // 释放引用
-        env->DeleteLocalRef(timeZone);
-        env->DeleteLocalRef(timezoneId);
-        env->DeleteLocalRef(timeZoneClass);
     }
 
     void UpdateLocale() {
