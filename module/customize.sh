@@ -43,8 +43,8 @@ check_zygisk() {
 check_zygisk
 
 if [ -d "/data/adb/fdi" ]; then
+    echo "not frist install"
+  else
     mkdir -p /data/adb/fdi
     cp $MODPATH/config.json /data/adb/fdi/
-  else
-    echo "not frist install"
 fi
