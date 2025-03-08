@@ -87,29 +87,39 @@ private:
         LOGD("UpdateBuildFields");
         jclass buildClass = env->FindClass("android/os/Build");
         jclass versionClass = env->FindClass("android/os/Build$VERSION");
-        
-        for (auto &[key, val]: spoofVars) {
+    
+        for (auto &[key, val] : spoofVars) {
             const char *fieldName = key.c_str();
-            
-            jfieldID fieldID = env->GetStaticFieldID(buildClass, fieldName, "Ljava/lang/String;");
+            jfieldID fieldID = nullptr;
             bool isStringField = true;
     
+            // 先尝试在 android.os.Build 里面找 String 字段
+            fieldID = env->GetStaticFieldID(buildClass, fieldName, "Ljava/lang/String;");
             if (env->ExceptionCheck()) {
                 env->ExceptionClear();
-                
-                fieldID = env->GetStaticFieldID(versionClass, fieldName, "I");
-                if (!env->ExceptionCheck() && fieldID != nullptr) {
-                    isStringField = false;
-                } else {
+                fieldID = env->GetStaticFieldID(versionClass, fieldName, "Ljava/lang/String;");
+    
+                if (env->ExceptionCheck()) {
                     env->ExceptionClear();
-                    continue;
+                    // 再尝试 int 类型
+                    fieldID = env->GetStaticFieldID(versionClass, fieldName, "I");
+                    if (!env->ExceptionCheck() && fieldID != nullptr) {
+                        isStringField = false;
+                    } else {
+                        env->ExceptionClear();
+                        continue;
+                    }
                 }
             }
     
             if (fieldID != nullptr) {
                 if (isStringField) {
                     jstring jValue = env->NewStringUTF(val.c_str());
-                    env->SetStaticObjectField(buildClass, fieldID, jValue);
+                    if (env->IsSameObject(buildClass, versionClass)) {
+                        env->SetStaticObjectField(versionClass, fieldID, jValue);
+                    } else {
+                        env->SetStaticObjectField(buildClass, fieldID, jValue);
+                    }
                     env->DeleteLocalRef(jValue);
                     LOGD("Set string field '%s' to '%s'", fieldName, val.c_str());
                 } else {
@@ -128,7 +138,6 @@ private:
         env->DeleteLocalRef(buildClass);
         env->DeleteLocalRef(versionClass);
     }
-    
 };
 
 

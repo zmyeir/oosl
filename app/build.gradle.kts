@@ -22,8 +22,8 @@ android {
         applicationId = "org.zrlab.fdi"
         minSdk = 26
         targetSdk = 35
-        versionCode = 18700
-        versionName = "v18.7"
+        versionCode = 1
+        versionName = "v0.0.1b"
 
         externalNativeBuild {
             cmake {

@@ -1,7 +1,7 @@
-id=fakedevice
-name=fdi
+id=fakedeviceinfo
+name=Fake Device Info
 version=ver
 versionCode=verCode
 author=fdi
-description=fdi
+description=Fake Device Info
 #updateJson=
