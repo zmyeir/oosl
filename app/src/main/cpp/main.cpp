@@ -61,26 +61,31 @@ public:
         LOGD("匹配到配置项: %s", (*profile)["name"].get<std::string>().c_str());
 
         if (profile->contains("build") && (*profile)["build"].is_object()) {
-            fakeBuildVars = (*profile)["build"].get<std::unordered_map<std::string, std::string>>();
+            spoofBuild = (*profile)["build"].get<std::unordered_map<std::string, std::string>>();
         }
 
-        if (profile->contains("locale") && (*profile)["locale"].is_array()) {
-            for (const auto& localeItem : (*profile)["locale"]) {
-                if (!localeItem.contains("tz") || !localeItem.contains("lang")) {
-                    continue;
-                }
-                fakeTimezone = localeItem["tz"].get<std::string>();
-                fakeLanguage = localeItem["lang"].get<std::string>();
-                break;  // 只使用第一个匹配项
-            }
+        // 添加时区伪装
+        if (profile->contains("timezone") && (*profile)["timezone"].is_string()) {
+            spoofTimezone = (*profile)["timezone"].get<std::string>();
+            LOGD("Will spoof timezone to: %s", spoofTimezone.c_str());
         }
 
-        if (!fakeBuildVars.empty()) {
+        // 添加语言伪装
+        if (profile->contains("locale") && (*profile)["locale"].is_string()) {
+            spoofLocale = (*profile)["locale"].get<std::string>();
+            LOGD("Will spoof locale to: %s", spoofLocale.c_str());
+        }
+
+        if (!spoofBuild.empty()) {
             UpdateBuildFields();
         }
 
-        if (!fakeLanguage.empty() || !fakeTimezone.empty()) {
-            UpdateLocaleAndTimezone();
+        if (!spoofTimezone.empty()) {
+            UpdateTimezone();
+        }
+
+        if (!spoofLocale.empty()) {
+            UpdateLocale();
         }
 
         env->ReleaseStringUTFChars(args->nice_name, processName);
@@ -94,27 +99,29 @@ public:
 private:
     zygisk::Api *api = nullptr;
     JNIEnv *env = nullptr;
-    std::unordered_map<std::string, std::string> fakeBuildVars;
-    std::string fakeTimezone;
-    std::string fakeLanguage;
+    std::unordered_map<std::string, std::string> spoofBuild;
+    std::string spoofTimezone;
+    std::string spoofLocale;
 
     void UpdateBuildFields() {
         LOGD("UpdateBuildFields");
         jclass buildClass = env->FindClass("android/os/Build");
         jclass versionClass = env->FindClass("android/os/Build$VERSION");
-
-        for (auto &[key, val] : fakeBuildVars) {
+    
+        for (auto &[key, val] : spoofBuild) {
             const char *fieldName = key.c_str();
             jfieldID fieldID = nullptr;
             bool isStringField = true;
-
+    
+            // 先尝试在 android.os.Build 里面找 String 字段
             fieldID = env->GetStaticFieldID(buildClass, fieldName, "Ljava/lang/String;");
             if (env->ExceptionCheck()) {
                 env->ExceptionClear();
                 fieldID = env->GetStaticFieldID(versionClass, fieldName, "Ljava/lang/String;");
-
+    
                 if (env->ExceptionCheck()) {
                     env->ExceptionClear();
+                    // 再尝试 int 类型
                     fieldID = env->GetStaticFieldID(versionClass, fieldName, "I");
                     if (!env->ExceptionCheck() && fieldID != nullptr) {
                         isStringField = false;
@@ -124,7 +131,7 @@ private:
                     }
                 }
             }
-
+    
             if (fieldID != nullptr) {
                 if (isStringField) {
                     jstring jValue = env->NewStringUTF(val.c_str());
@@ -140,50 +147,152 @@ private:
                     env->SetStaticIntField(versionClass, fieldID, intValue);
                     LOGD("Set int field '%s' to %d", fieldName, intValue);
                 }
-
+    
                 if (env->ExceptionCheck()) {
                     env->ExceptionClear();
                     continue;
                 }
             }
         }
-
+    
         env->DeleteLocalRef(buildClass);
         env->DeleteLocalRef(versionClass);
     }
 
-    void UpdateLocaleAndTimezone() {
-        LOGD("UpdateLocaleAndTimezone");
+    void UpdateTimezone() {
+        LOGD("Updating timezone to: %s", spoofTimezone.c_str());
+        
+        // 获取 TimeZone 类
+        jclass timeZoneClass = env->FindClass("java/util/TimeZone");
+        if (!timeZoneClass || env->ExceptionCheck()) {
+            if (env->ExceptionCheck()) env->ExceptionClear();
+            LOGD("Failed to find TimeZone class");
+            return;
+        }
+        
+        // 获取 getTimeZone 静态方法
+        jmethodID getTimeZoneMethod = env->GetStaticMethodID(timeZoneClass, "getTimeZone", 
+                                                           "(Ljava/lang/String;)Ljava/util/TimeZone;");
+        if (!getTimeZoneMethod || env->ExceptionCheck()) {
+            if (env->ExceptionCheck()) env->ExceptionClear();
+            LOGD("Failed to find getTimeZone method");
+            env->DeleteLocalRef(timeZoneClass);
+            return;
+        }
+        
+        // 获取 setDefault 静态方法
+        jmethodID setDefaultMethod = env->GetStaticMethodID(timeZoneClass, "setDefault", 
+                                                          "(Ljava/util/TimeZone;)V");
+        if (!setDefaultMethod || env->ExceptionCheck()) {
+            if (env->ExceptionCheck()) env->ExceptionClear();
+            LOGD("Failed to find setDefault method");
+            env->DeleteLocalRef(timeZoneClass);
+            return;
+        }
+        
+        // 创建时区ID字符串
+        jstring timezoneId = env->NewStringUTF(spoofTimezone.c_str());
+        
+        // 获取指定时区
+        jobject timeZone = env->CallStaticObjectMethod(timeZoneClass, getTimeZoneMethod, timezoneId);
+        if (!timeZone || env->ExceptionCheck()) {
+            if (env->ExceptionCheck()) env->ExceptionClear();
+            LOGD("Failed to get timezone instance");
+            env->DeleteLocalRef(timezoneId);
+            env->DeleteLocalRef(timeZoneClass);
+            return;
+        }
+        
+        // 设置为默认时区
+        env->CallStaticVoidMethod(timeZoneClass, setDefaultMethod, timeZone);
+        if (env->ExceptionCheck()) {
+            env->ExceptionClear();
+            LOGD("Failed to set default timezone");
+        } else {
+            LOGD("Successfully set timezone to: %s", spoofTimezone.c_str());
+        }
+        
+        // 释放引用
+        env->DeleteLocalRef(timeZone);
+        env->DeleteLocalRef(timezoneId);
+        env->DeleteLocalRef(timeZoneClass);
+    }
 
-        if (!fakeLanguage.empty()) {
-            jclass localeClass = env->FindClass("java/util/Locale");
-            jmethodID localeCtor = env->GetMethodID(localeClass, "<init>", "(Ljava/lang/String;)V");
-            jmethodID setDefault = env->GetStaticMethodID(localeClass, "setDefault", "(Ljava/util/Locale;)V");
-
-            jstring jLang = env->NewStringUTF(fakeLanguage.c_str());
-            jobject newLocale = env->NewObject(localeClass, localeCtor, jLang);
-            env->CallStaticVoidMethod(localeClass, setDefault, newLocale);
-
-            env->DeleteLocalRef(jLang);
-            env->DeleteLocalRef(newLocale);
+    void UpdateLocale() {
+        LOGD("Updating locale to: %s", spoofLocale.c_str());
+        
+        // 获取 Locale 类
+        jclass localeClass = env->FindClass("java/util/Locale");
+        if (!localeClass || env->ExceptionCheck()) {
+            if (env->ExceptionCheck()) env->ExceptionClear();
+            LOGD("Failed to find Locale class");
+            return;
+        }
+        
+        // 解析语言代码和国家代码
+        std::string language = spoofLocale;
+        std::string country = "";
+        size_t separatorPos = spoofLocale.find('-');
+        if (separatorPos != std::string::npos) {
+            language = spoofLocale.substr(0, separatorPos);
+            country = spoofLocale.substr(separatorPos + 1);
+        } else {
+            separatorPos = spoofLocale.find('_');
+            if (separatorPos != std::string::npos) {
+                language = spoofLocale.substr(0, separatorPos);
+                country = spoofLocale.substr(separatorPos + 1);
+            }
+        }
+        
+        // 创建 Locale 实例
+        jmethodID localeConstructor;
+        jobject localeInstance;
+        jstring langString = env->NewStringUTF(language.c_str());
+        
+        if (!country.empty()) {
+            // 使用语言和国家创建
+            jstring countryString = env->NewStringUTF(country.c_str());
+            localeConstructor = env->GetMethodID(localeClass, "<init>", "(Ljava/lang/String;Ljava/lang/String;)V");
+            localeInstance = env->NewObject(localeClass, localeConstructor, langString, countryString);
+            env->DeleteLocalRef(countryString);
+        } else {
+            // 只使用语言创建
+            localeConstructor = env->GetMethodID(localeClass, "<init>", "(Ljava/lang/String;)V");
+            localeInstance = env->NewObject(localeClass, localeConstructor, langString);
+        }
+        
+        if (!localeInstance || env->ExceptionCheck()) {
+            if (env->ExceptionCheck()) env->ExceptionClear();
+            LOGD("Failed to create Locale instance");
+            env->DeleteLocalRef(langString);
             env->DeleteLocalRef(localeClass);
-            LOGD("语言伪造完成: %s", fakeLanguage.c_str());
+            return;
         }
-
-        if (!fakeTimezone.empty()) {
-            jclass timezoneClass = env->FindClass("java/util/TimeZone");
-            jmethodID getTimeZone = env->GetStaticMethodID(timezoneClass, "getTimeZone", "(Ljava/lang/String;)Ljava/util/TimeZone;");
-            jmethodID setDefault = env->GetStaticMethodID(timezoneClass, "setDefault", "(Ljava/util/TimeZone;)V");
-
-            jstring jTz = env->NewStringUTF(fakeTimezone.c_str());
-            jobject newTimezone = env->CallStaticObjectMethod(timezoneClass, getTimeZone, jTz);
-            env->CallStaticVoidMethod(timezoneClass, setDefault, newTimezone);
-
-            env->DeleteLocalRef(jTz);
-            env->DeleteLocalRef(newTimezone);
-            env->DeleteLocalRef(timezoneClass);
-            LOGD("时区伪造完成: %s", fakeTimezone.c_str());
+        
+        // 设置为默认语言
+        jmethodID setDefaultMethod = env->GetStaticMethodID(localeClass, "setDefault", 
+                                                         "(Ljava/util/Locale;)V");
+        if (!setDefaultMethod || env->ExceptionCheck()) {
+            if (env->ExceptionCheck()) env->ExceptionClear();
+            LOGD("Failed to find setDefault method");
+            env->DeleteLocalRef(localeInstance);
+            env->DeleteLocalRef(langString);
+            env->DeleteLocalRef(localeClass);
+            return;
         }
+        
+        env->CallStaticVoidMethod(localeClass, setDefaultMethod, localeInstance);
+        if (env->ExceptionCheck()) {
+            env->ExceptionClear();
+            LOGD("Failed to set default locale");
+        } else {
+            LOGD("Successfully set locale to: %s", spoofLocale.c_str());
+        }
+        
+        // 释放引用
+        env->DeleteLocalRef(localeInstance);
+        env->DeleteLocalRef(langString);
+        env->DeleteLocalRef(localeClass);
     }
 };
 
