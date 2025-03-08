@@ -16,11 +16,14 @@
 #include "json.hpp"
 
 #define LOG_TAG "FDI"
-#define LOGD(...) __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, __VA_ARGS__)
+#ifdef DEBUG
+    #define LOGD(...) __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, __VA_ARGS__)
+#else
+    #define LOGD(...)
+#endif
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
 #define LOGW(...) __android_log_print(ANDROID_LOG_WARN, LOG_TAG, __VA_ARGS__)
 
-// **安全写入数据到文件描述符**
 inline bool safeWrite(int fd, const void *buffer, size_t size) {
     size_t written = 0;
     const uint8_t *buf = static_cast<const uint8_t*>(buffer);

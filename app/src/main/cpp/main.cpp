@@ -12,19 +12,19 @@ public:
         LOGD("FakeDeviceInfo 模块加载成功");
     }
 
-void preAppSpecialize(zygisk::AppSpecializeArgs *args) override {
+    void preAppSpecialize(zygisk::AppSpecializeArgs *args) override {
         LOGD("启动 preAppSpecialize");
         
         const char *processName = env->GetStringUTFChars(args->nice_name, nullptr);
         if (!processName) {
-            LOGD("无法获取进程名称");
+            LOGE("无法获取进程名称");
             return;
         }
         LOGD("当前进程名称: %s", processName);
     
         int fd = api->connectCompanion();
         if (fd < 0) {
-            LOGD("连接 Companion 失败，fd: %d", fd);
+            LOGE("连接 Companion 失败，fd: %d", fd);
             env->ReleaseStringUTFChars(args->nice_name, processName);
             return;
         }
@@ -37,7 +37,7 @@ void preAppSpecialize(zygisk::AppSpecializeArgs *args) override {
         memcpy(requestBuffer.data() + 1 + 4, processName, nameSize);
     
         if (write(fd, requestBuffer.data(), requestBuffer.size()) != requestBuffer.size()) {
-            LOGD("发送 Process Name 失败");
+            LOGE("发送 Process Name 失败");
             close(fd);
             env->ReleaseStringUTFChars(args->nice_name, processName);
             return;
@@ -47,13 +47,12 @@ void preAppSpecialize(zygisk::AppSpecializeArgs *args) override {
         uint8_t responseType;
         int32_t responseSize;
         if (read(fd, &responseType, 1) != 1 || read(fd, &responseSize, 4) != 4) {
-            LOGD("读取响应头失败");
+            LOGE("读取响应头失败");
             close(fd);
             env->ReleaseStringUTFChars(args->nice_name, processName);
             return;
         }
     
-        // **新增：判断未匹配到数据的情况**
         if (responseType == 3) {
             LOGD("Companion 未匹配到进程: %s，跳过伪装", processName);
             close(fd);
@@ -100,7 +99,6 @@ void preAppSpecialize(zygisk::AppSpecializeArgs *args) override {
         LOGD("preAppSpecialize 处理完成");
     }
     
-
     void preServerSpecialize(zygisk::ServerSpecializeArgs *args) override {
         api->setOption(zygisk::DLCLOSE_MODULE_LIBRARY);
     }

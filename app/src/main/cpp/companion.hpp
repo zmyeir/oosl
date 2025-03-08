@@ -153,12 +153,12 @@ inline void FakeDeviceInfoD(int fd) {
     if (it == cachedTargetProfileMap.end()) {
         // LOGD("未匹配到进程: %s", processName.c_str());
 
-        // 发送 `type=3` 表示未匹配到数据
         uint8_t responseType = 3;
         int32_t responseSize = 0;
         write(fd, &responseType, 1);
         write(fd, &responseSize, 4);
         return;
+        LOGD("Companion 进程结束");
     }
 
     json response = *(it->second);
@@ -166,7 +166,7 @@ inline void FakeDeviceInfoD(int fd) {
     int32_t responseSize = static_cast<int32_t>(responseStr.size());
 
     std::vector<uint8_t> responseBuffer(1 + 4 + responseSize);
-    responseBuffer[0] = 2;  // 响应类型 2（JSON 数据）
+    responseBuffer[0] = 2;
     memcpy(responseBuffer.data() + 1, &responseSize, sizeof(responseSize));
     memcpy(responseBuffer.data() + 1 + 4, responseStr.data(), responseSize);
 
