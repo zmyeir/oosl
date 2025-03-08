@@ -14,32 +14,6 @@ namespace Companion {
 inline std::unordered_map<std::string, std::shared_ptr<json>> cachedTargetProfileMap;
 inline std::filesystem::file_time_type lastConfigWriteTime;
 
-// **读取配置文件内容**
-inline std::string readConfigFile(const char* filePath) {
-    std::error_code ec;
-    size_t fileSize = std::filesystem::file_size(filePath, ec);
-    if (ec) {
-        LOGE("无法获取文件大小: %s, 错误: %s", filePath, ec.message().c_str());
-        return {};
-    }
-
-    FILE* file = fopen(filePath, "rb");
-    if (!file) {
-        LOGE("无法打开文件: %s", filePath);
-        return {};
-    }
-
-    std::string buffer(fileSize, '\0');
-    if (fread(buffer.data(), 1, fileSize, file) != fileSize) {
-        LOGE("读取文件失败: %s", filePath);
-        fclose(file);
-        return {};
-    }
-
-    fclose(file);
-    return buffer;
-}
-
 // **备份配置文件**
 inline void backupConfigFile() {
     std::error_code ec;
@@ -53,13 +27,28 @@ inline void backupConfigFile() {
 
 // **尝试读取并解析 JSON 配置**
 inline bool loadConfigFromFile(const char* filePath, json& configJson) {
-    std::string configStr = readConfigFile(filePath);
-    if (configStr.empty()) {
-        LOGE("配置文件为空: %s", filePath);
+    std::error_code ec;
+    size_t fileSize = std::filesystem::file_size(filePath, ec);
+    if (ec) {
+        LOGE("无法获取文件大小: %s, 错误: %s", filePath, ec.message().c_str());
         return false;
     }
 
-    json parsedJson = json::parse(configStr, nullptr, false);
+    FILE* file = fopen(filePath, "rb");
+    if (!file) {
+        LOGE("无法打开文件: %s", filePath);
+        return false;
+    }
+
+    std::string buffer(fileSize, '\0');
+    if (fread(buffer.data(), 1, fileSize, file) != fileSize) {
+        LOGE("读取文件失败: %s", filePath);
+        fclose(file);
+        return false;
+    }
+    fclose(file);
+
+    json parsedJson = json::parse(buffer, nullptr, false);
     if (!parsedJson.is_array()) {
         LOGE("配置文件格式无效: %s", filePath);
         return false;
@@ -69,7 +58,6 @@ inline bool loadConfigFromFile(const char* filePath, json& configJson) {
     return true;
 }
 
-// **更新缓存：支持回退机制**
 inline void updateTargetProfileMapCache() {
     std::error_code ec;
     auto currentWriteTime = std::filesystem::last_write_time(CONFIG_FILE, ec);
@@ -84,32 +72,54 @@ inline void updateTargetProfileMapCache() {
     }
 
     json configJson;
+    bool usingBackup = false;
+
     if (!loadConfigFromFile(CONFIG_FILE, configJson)) {
         LOGE("主配置文件加载失败，尝试加载备份文件...");
+
         if (!loadConfigFromFile(CONFIG_BACKUP_FILE, configJson)) {
             LOGE("备份配置文件也无法加载，放弃更新缓存");
             return;
         }
+        usingBackup = true;
     }
 
-    // 解析成功后更新缓存
     cachedTargetProfileMap.clear();
+
+    size_t validProfileCount = 0;
+
     for (const auto& profile : configJson) {
-        if (!profile.contains("targets") || !profile["targets"].is_array()) {
+        if (!profile.contains("targets") || 
+            !profile["targets"].is_array() || 
+            profile["targets"].empty() ||
+            !profile.contains("build") || 
+            profile["build"].empty()) {
+            LOGW("跳过无效的配置项：targets 或 build 字段不合法");
             continue;
         }
+
         auto profilePtr = std::make_shared<json>(profile);
+
         for (const auto& target : profile["targets"]) {
             std::string targetName = target.get<std::string>();
             cachedTargetProfileMap[targetName] = profilePtr;
         }
+
+        validProfileCount++;
+    }
+
+    if (validProfileCount == 0) {
+        LOGE("没有有效的配置项，保持原有缓存");
+        return;
     }
 
     lastConfigWriteTime = currentWriteTime;
-    LOGD("配置文件更新，缓存已刷新");
 
-    // 备份配置文件
-    backupConfigFile();
+    LOGD("配置文件更新，缓存已刷新，总映射数：%zu", cachedTargetProfileMap.size());
+
+    if (!usingBackup) {
+        backupConfigFile();
+    }
 }
 
 // **伴生进程逻辑**
