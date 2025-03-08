@@ -42,3 +42,9 @@ check_zygisk() {
 # Module requires Zygisk to work
 check_zygisk
 
+if [ -d "/data/adb/fdi" ]; then
+    mkdir -p /data/adb/fdi
+    cp $MODPATH/config.json /data/adb/fdi/
+  else
+    echo "not frist install"
+fi

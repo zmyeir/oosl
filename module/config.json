@@ -1,0 +1,28 @@
+[
+  {
+    "name": "profile1",
+    "targets": ["com.finalwire.aida64"],
+    "build": {
+      "BRAND": "Samsung",
+      "MANUFACTURER": "Samsung",
+      "MODEL": "Galaxy S21",
+      "PRODUCT": "o1q",
+      "DEVICE": "o1q",
+      "HARDWARE": "exynos2100",
+      "FINGERPRINT": "samsung/o1qxx/o1q:13/TP1A.220624.014/230401002:user/release-keys",
+      "DISPLAY": "TP1A.220624.014.G991BXXU5DWB7",
+      "ID": "TP1A.220624.014",
+      "TAGS": "release-keys",
+      "TYPE": "user",
+      "USER": "buildbot",
+      "RELEASE": "13",
+      "RELEASE_OR_CODENAME": "13",
+      "CODENAME": "Q",
+      "INCREMENTAL": "230401002",
+      "SECURITY_PATCH": "2023-04-01",
+      "BASE_OS": "Samsung One UI 5.1",
+      "SDK_INT": "33"
+    },
+    "locale": "en-US"
+  }
+]

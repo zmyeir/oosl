@@ -14,13 +14,7 @@ public:
 
 void preAppSpecialize(zygisk::AppSpecializeArgs *args) override {
         LOGD("启动 preAppSpecialize");
-        api->setOption(zygisk::DLCLOSE_MODULE_LIBRARY);
-    
-        if (!args || !args->nice_name) {
-            LOGD("args 或 nice_name 为空，跳过处理");
-            return;
-        }
-    
+        
         const char *processName = env->GetStringUTFChars(args->nice_name, nullptr);
         if (!processName) {
             LOGD("无法获取进程名称");
@@ -69,7 +63,7 @@ void preAppSpecialize(zygisk::AppSpecializeArgs *args) override {
     
         LOGD("接收到响应大小: %d", responseSize);
         if (responseSize <= 0) {
-            LOGD("无效的 JSON 数据大小");
+            LOGE("无效的 JSON 数据大小");
             close(fd);
             env->ReleaseStringUTFChars(args->nice_name, processName);
             return;
@@ -77,7 +71,7 @@ void preAppSpecialize(zygisk::AppSpecializeArgs *args) override {
     
         std::vector<uint8_t> responseBuffer(responseSize);
         if (read(fd, responseBuffer.data(), responseSize) != responseSize) {
-            LOGD("读取 JSON 配置失败");
+            LOGE("读取 JSON 配置失败");
             close(fd);
             env->ReleaseStringUTFChars(args->nice_name, processName);
             return;
@@ -86,7 +80,7 @@ void preAppSpecialize(zygisk::AppSpecializeArgs *args) override {
     
         json profileJson = json::parse(responseBuffer, nullptr, false);
         if (!profileJson.is_object()) {
-            LOGD("解析 JSON 失败或不是对象");
+            LOGE("解析 JSON 失败或不是对象");
             env->ReleaseStringUTFChars(args->nice_name, processName);
             return;
         }
@@ -159,12 +153,12 @@ private:
                 } else {
                     int intValue = std::stoi(val);
                     env->SetStaticIntField(versionClass, fieldID, intValue);
-                    LOGD("已设置 '%s' 为 %d", fieldName, intValue);
+                    LOGD("已设置 '%s' 为 '%d'", fieldName, intValue);
                 }
 
                 if (env->ExceptionCheck()) {
                     env->ExceptionClear();
-                    LOGD("设置字段 '%s' 时发生异常", fieldName);
+                    LOGW("设置字段 '%s' 时发生异常", fieldName);
                     continue;
                 }
             }

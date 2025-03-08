@@ -10,11 +10,9 @@ constexpr const char* CONFIG_BACKUP_FILE = "/data/adb/fdi/do_not_edit_it";
 
 namespace Companion {
 
-// **全局缓存：target -> profile 映射**
 inline std::unordered_map<std::string, std::shared_ptr<json>> cachedTargetProfileMap;
 inline std::filesystem::file_time_type lastConfigWriteTime;
 
-// **备份配置文件**
 inline void backupConfigFile() {
     LOGD("开始备份配置文件...");
     std::error_code ec;
@@ -26,7 +24,6 @@ inline void backupConfigFile() {
     }
 }
 
-// **尝试读取并解析 JSON 配置**
 inline bool loadConfigFromFile(const char* filePath, json& configJson) {
     LOGD("尝试从文件加载配置: %s", filePath);
     std::error_code ec;
@@ -82,12 +79,12 @@ inline void updateTargetProfileMapCache() {
     bool usingBackup = false;
 
     if (!loadConfigFromFile(CONFIG_FILE, configJson)) {
-        LOGE("主配置文件加载失败，尝试加载备份文件...");
+        LOGW("主配置文件加载失败，尝试加载备份文件...");
         if (!loadConfigFromFile(CONFIG_BACKUP_FILE, configJson)) {
             LOGE("备份配置文件也无法加载，放弃更新缓存");
             return;
         }
-        LOGD("成功从备份文件加载配置");
+        LOGW("从备份文件加载配置");
         usingBackup = true;
     }
 
@@ -154,7 +151,7 @@ inline void FakeDeviceInfoD(int fd) {
 
     auto it = cachedTargetProfileMap.find(processName);
     if (it == cachedTargetProfileMap.end()) {
-        LOGD("未匹配到进程: %s", processName.c_str());
+        // LOGD("未匹配到进程: %s", processName.c_str());
 
         // 发送 `type=3` 表示未匹配到数据
         uint8_t responseType = 3;
