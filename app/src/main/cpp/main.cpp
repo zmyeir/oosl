@@ -82,44 +82,46 @@ private:
     zygisk::Api *api = nullptr;
     JNIEnv *env = nullptr;
     std::unordered_map<std::string, std::string> spoofVars;
-    
+
     void UpdateBuildFields() {
         LOGD("UpdateBuildFields");
         jclass buildClass = env->FindClass("android/os/Build");
-        LOGD("buildClass: %p", buildClass);
         jclass versionClass = env->FindClass("android/os/Build$VERSION");
-        LOGD("versionClass: %p", versionClass);
-    
+        
         for (auto &[key, val]: spoofVars) {
             const char *fieldName = key.c_str();
-    
+            
             jfieldID fieldID = env->GetStaticFieldID(buildClass, fieldName, "Ljava/lang/String;");
+            bool isStringField = true;
     
             if (env->ExceptionCheck()) {
                 env->ExceptionClear();
-    
-                fieldID = env->GetStaticFieldID(versionClass, fieldName, "Ljava/lang/String;");
-    
-                if (env->ExceptionCheck()) {
+                
+                fieldID = env->GetStaticFieldID(versionClass, fieldName, "I");
+                if (!env->ExceptionCheck() && fieldID != nullptr) {
+                    isStringField = false;
+                } else {
                     env->ExceptionClear();
                     continue;
                 }
             }
     
             if (fieldID != nullptr) {
-                const char *value = val.c_str();
-                jstring jValue = env->NewStringUTF(value);
-    
-                env->SetStaticObjectField(buildClass, fieldID, jValue);
-    
-                env->DeleteLocalRef(jValue);
+                if (isStringField) {
+                    jstring jValue = env->NewStringUTF(val.c_str());
+                    env->SetStaticObjectField(buildClass, fieldID, jValue);
+                    env->DeleteLocalRef(jValue);
+                    LOGD("Set string field '%s' to '%s'", fieldName, val.c_str());
+                } else {
+                    int intValue = std::stoi(val);
+                    env->SetStaticIntField(versionClass, fieldID, intValue);
+                    LOGD("Set int field '%s' to %d", fieldName, intValue);
+                }
     
                 if (env->ExceptionCheck()) {
                     env->ExceptionClear();
                     continue;
                 }
-    
-                LOGD("Set '%s' to '%s'", fieldName, value);
             }
         }
     
