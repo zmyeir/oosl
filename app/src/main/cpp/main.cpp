@@ -12,88 +12,103 @@ public:
         LOGD("FakeDeviceInfo 模块加载成功");
     }
 
-    void preAppSpecialize(zygisk::AppSpecializeArgs *args) override {
+void preAppSpecialize(zygisk::AppSpecializeArgs *args) override {
         LOGD("启动 preAppSpecialize");
         api->setOption(zygisk::DLCLOSE_MODULE_LIBRARY);
-
+    
         if (!args || !args->nice_name) {
             LOGD("args 或 nice_name 为空，跳过处理");
             return;
         }
-
+    
         const char *processName = env->GetStringUTFChars(args->nice_name, nullptr);
         if (!processName) {
             LOGD("无法获取进程名称");
             return;
         }
         LOGD("当前进程名称: %s", processName);
-
+    
         int fd = api->connectCompanion();
         if (fd < 0) {
             LOGD("连接 Companion 失败，fd: %d", fd);
             env->ReleaseStringUTFChars(args->nice_name, processName);
             return;
         }
-
-        int nameSize = static_cast<int>(strlen(processName));
-        safeWrite(fd, &nameSize, sizeof(nameSize));
-        safeWrite(fd, processName, nameSize);
-        LOGD("已发送进程名称到 Companion，大小: %d", nameSize);
-
-        int responseSize = 0;
-        if (read(fd, &responseSize, sizeof(responseSize)) != sizeof(responseSize) || responseSize <= 0) {
-            LOGD("读取响应大小失败或无效: %d", responseSize);
+    
+        uint8_t type = 1;
+        int32_t nameSize = static_cast<int32_t>(strlen(processName));
+        std::vector<uint8_t> requestBuffer(1 + 4 + nameSize);
+        requestBuffer[0] = type;
+        memcpy(requestBuffer.data() + 1, &nameSize, sizeof(nameSize));
+        memcpy(requestBuffer.data() + 1 + 4, processName, nameSize);
+    
+        if (write(fd, requestBuffer.data(), requestBuffer.size()) != requestBuffer.size()) {
+            LOGD("发送 Process Name 失败");
             close(fd);
             env->ReleaseStringUTFChars(args->nice_name, processName);
             return;
         }
-        LOGD("接收到的 JSON 配置大小: %d", responseSize);
-
+        LOGD("已发送 Process Name: %s", processName);
+    
+        uint8_t responseType;
+        int32_t responseSize;
+        if (read(fd, &responseType, 1) != 1 || read(fd, &responseSize, 4) != 4) {
+            LOGD("读取响应头失败");
+            close(fd);
+            env->ReleaseStringUTFChars(args->nice_name, processName);
+            return;
+        }
+    
+        // **新增：判断未匹配到数据的情况**
+        if (responseType == 3) {
+            LOGD("Companion 未匹配到进程: %s，跳过伪装", processName);
+            close(fd);
+            env->ReleaseStringUTFChars(args->nice_name, processName);
+            return;
+        }
+    
+        LOGD("接收到响应大小: %d", responseSize);
+        if (responseSize <= 0) {
+            LOGD("无效的 JSON 数据大小");
+            close(fd);
+            env->ReleaseStringUTFChars(args->nice_name, processName);
+            return;
+        }
+    
         std::vector<uint8_t> responseBuffer(responseSize);
         if (read(fd, responseBuffer.data(), responseSize) != responseSize) {
-            LOGD("读取 JSON 配置数据失败");
+            LOGD("读取 JSON 配置失败");
             close(fd);
             env->ReleaseStringUTFChars(args->nice_name, processName);
             return;
         }
         close(fd);
-
+    
         json profileJson = json::parse(responseBuffer, nullptr, false);
         if (!profileJson.is_object()) {
             LOGD("解析 JSON 失败或不是对象");
             env->ReleaseStringUTFChars(args->nice_name, processName);
             return;
         }
-
-        auto profile = std::make_shared<json>(profileJson);
-        LOGD("匹配到配置项: %s", (*profile)["name"].get<std::string>().c_str());
-
-        if (profile->contains("build") && (*profile)["build"].is_object()) {
-            spoofBuild = (*profile)["build"].get<std::unordered_map<std::string, std::string>>();
+    
+        LOGD("匹配到配置项: %s", profileJson["name"].get<std::string>().c_str());
+    
+        if (profileJson.contains("build") && profileJson["build"].is_object()) {
+            spoofBuild = profileJson["build"].get<std::unordered_map<std::string, std::string>>();
             LOGD("获取到 %zu 个 Build 伪装参数", spoofBuild.size());
         }
-
-        if (profile->contains("locale") && (*profile)["locale"].is_string()) {
-            spoofLocale = (*profile)["locale"].get<std::string>();
-            LOGD("将伪装 locale 为: %s", spoofLocale.c_str());
-        }
-
+    
         if (!spoofBuild.empty()) {
             UpdateBuildFields();
         }
-
-        if (!spoofLocale.empty()) {
-            UpdateLocale();
-        }
-
+    
         env->ReleaseStringUTFChars(args->nice_name, processName);
         LOGD("preAppSpecialize 处理完成");
     }
+    
 
     void preServerSpecialize(zygisk::ServerSpecializeArgs *args) override {
-        LOGD("进入 preServerSpecialize");
         api->setOption(zygisk::DLCLOSE_MODULE_LIBRARY);
-        LOGD("preServerSpecialize 处理完成");
     }
 
 private:
@@ -158,30 +173,6 @@ private:
         env->DeleteLocalRef(buildClass);
         env->DeleteLocalRef(versionClass);
         LOGD("UpdateBuildFields 处理完成");
-    }
-
-    void UpdateLocale() {
-        LOGD("执行 UpdateLocale");
-
-        jclass localeClass = env->FindClass("java/util/Locale");
-        jmethodID setDefaultMethod = env->GetStaticMethodID(localeClass, "setDefault", "(Ljava/util/Locale;)V");
-
-        if (!setDefaultMethod || env->ExceptionCheck()) {
-            env->ExceptionClear();
-            LOGD("无法找到 Locale.setDefault 方法");
-            return;
-        }
-
-        jstring jLocaleStr = env->NewStringUTF(spoofLocale.c_str());
-        jmethodID localeConstructor = env->GetMethodID(localeClass, "<init>", "(Ljava/lang/String;)V");
-        jobject newLocale = env->NewObject(localeClass, localeConstructor, jLocaleStr);
-        
-        env->CallStaticVoidMethod(localeClass, setDefaultMethod, newLocale);
-        LOGD("Locale 伪装完成: %s", spoofLocale.c_str());
-
-        env->DeleteLocalRef(jLocaleStr);
-        env->DeleteLocalRef(newLocale);
-        env->DeleteLocalRef(localeClass);
     }
 };
 

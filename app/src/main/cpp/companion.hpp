@@ -130,19 +130,18 @@ inline void updateTargetProfileMapCache() {
     }
 }
 
-// **伴生进程逻辑**
 inline void FakeDeviceInfoD(int fd) {
     LOGD("Companion 进程启动");
 
     updateTargetProfileMapCache();
 
-    int nameSize = 0;
-    if (read(fd, &nameSize, sizeof(nameSize)) != sizeof(nameSize) || nameSize <= 0) {
-        LOGE("读取进程名大小失败");
+    uint8_t requestType;
+    int32_t nameSize;
+    if (read(fd, &requestType, 1) != 1 || read(fd, &nameSize, 4) != 4 || nameSize <= 0) {
+        LOGE("读取请求类型或进程名大小失败");
         return;
     }
-    LOGD("接收到进程名大小: %d", nameSize);
-
+    
     std::vector<char> nameBuffer(nameSize + 1);
     if (read(fd, nameBuffer.data(), nameSize) != nameSize) {
         LOGE("读取进程名失败");
@@ -154,21 +153,28 @@ inline void FakeDeviceInfoD(int fd) {
     LOGD("收到查询进程名: %s", processName.c_str());
 
     auto it = cachedTargetProfileMap.find(processName);
-    json response;
-    if (it != cachedTargetProfileMap.end()) {
-        response = *(it->second);
-        LOGD("找到匹配的配置: %s", processName.c_str());
-    } else {
-        LOGD("未找到匹配的配置: %s", processName.c_str());
+    if (it == cachedTargetProfileMap.end()) {
+        LOGD("未匹配到进程: %s", processName.c_str());
+
+        // 发送 `type=3` 表示未匹配到数据
+        uint8_t responseType = 3;
+        int32_t responseSize = 0;
+        write(fd, &responseType, 1);
+        write(fd, &responseSize, 4);
+        return;
     }
 
+    json response = *(it->second);
     std::string responseStr = response.dump();
-    int responseSize = static_cast<int>(responseStr.size());
+    int32_t responseSize = static_cast<int32_t>(responseStr.size());
 
-    LOGD("准备发送响应数据，大小: %d 字节", responseSize);
-    safeWrite(fd, &responseSize, sizeof(responseSize));
-    if (responseSize > 0) {
-        safeWrite(fd, responseStr.data(), responseStr.size());
+    std::vector<uint8_t> responseBuffer(1 + 4 + responseSize);
+    responseBuffer[0] = 2;  // 响应类型 2（JSON 数据）
+    memcpy(responseBuffer.data() + 1, &responseSize, sizeof(responseSize));
+    memcpy(responseBuffer.data() + 1 + 4, responseStr.data(), responseSize);
+
+    if (write(fd, responseBuffer.data(), responseBuffer.size()) != responseBuffer.size()) {
+        LOGE("发送 JSON 配置失败");
     }
 
     LOGD("Companion 进程结束");
